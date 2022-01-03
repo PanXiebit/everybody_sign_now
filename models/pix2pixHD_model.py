@@ -212,6 +212,21 @@ class Pix2PixHDModel(pl.LightningModule):
         pred_real = self.discriminate_4(input_label, next_label, real_image, next_image)
         pred_fake_pool = self.discriminate_4(input_label, next_label, I_0, I_1, use_pool=True)
 
+        # visualize
+        if batch_idx % 5 == 0:            
+            input_label_vis = (torch.clamp(input_label, -1, 1.0) + 1.0) / 2
+            input_label_vis = torchvision.utils.make_grid(input_label_vis[0])
+            real_image_vis = (torch.clamp(real_image, -1, 1.0) + 1.0) / 2
+            real_image_vis = torchvision.utils.make_grid(real_image_vis[0])
+
+            pred_image_vis = (torch.clamp(I_0, -1, 1.0) + 1.0) / 2 
+            pred_image_vis = torchvision.utils.make_grid(pred_image_vis[0])
+
+
+            self.logger.experiment.add_image("input_label", input_label_vis, self.global_step)
+            self.logger.experiment.add_image("real_image", real_image_vis, self.global_step)
+            self.logger.experiment.add_image("pred_image", pred_image_vis, self.global_step)
+
         if optimizer_idx == 0:
             if self.opt.hand_discrim:
                 # Generator loss for lhand_0 and lhand_1     
@@ -302,6 +317,7 @@ class Pix2PixHDModel(pl.LightningModule):
             return D_loss
 
     def validation_step(self, batch, batch_idx):
+        if batch_idx > 5: return
         input_label = batch["label_0"]
         next_label = batch["label_1"]
         real_image = batch["rgb_0"]
@@ -320,15 +336,17 @@ class Pix2PixHDModel(pl.LightningModule):
         input_concat = torch.cat((input_label, prevouts), dim=1) 
         initial_I_0 = self.netG.forward(input_concat)
 
-        print("initial_I_0: ", initial_I_0.shape)
-        exit()
+        
+
         if self.opt.hand_generator:
             lhand_label_0 = input_label[:, :, l_miny:l_maxy, l_minx:l_maxx]
             lhand_residual_0 = self.faceGen.forward(torch.cat((lhand_label_0, initial_I_0[:, :, l_miny:l_maxy, l_minx:l_maxx]), dim=1))
             I_0 = initial_I_0.clone()
             I_0[:, :, l_miny:l_maxy, l_minx:l_maxx] = initial_I_0[:, :, l_miny:l_maxy, l_minx:l_maxx] + lhand_residual_0
             fake_lhand_0 = I_0[:, :, l_miny:l_maxy, l_minx:l_maxx]
-            return I_0
+        else:
+            I_0 = initial_I_0
+        
         input_label_vis = (torch.clamp(input_label, -1, 1.0) + 1.0) / 2
         input_label_vis = torchvision.utils.make_grid(input_label_vis[0])
         real_image_vis = (torch.clamp(real_image, -1, 1.0) + 1.0) / 2
@@ -342,7 +360,7 @@ class Pix2PixHDModel(pl.LightningModule):
         self.logger.experiment.add_image("real_image", real_image_vis, self.current_epoch)
         self.logger.experiment.add_image("pred_image", pred_image_vis, self.current_epoch)
 
-        return initial_I_0
+        return I_0
 
     def get_edges(self, t):
         edge = torch.cuda.ByteTensor(t.size()).zero_()
