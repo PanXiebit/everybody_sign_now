@@ -19,6 +19,7 @@ class Pix2PixHDModel(pl.LightningModule):
 
     def __init__(self, opt):
         super().__init__()
+        self.opt = opt
         if opt.resize_or_crop != 'none': # when training at full res this causes OOM
             torch.backends.cudnn.benchmark = True
         self.isTrain = opt.isTrain
@@ -65,94 +66,65 @@ class Pix2PixHDModel(pl.LightningModule):
                 raise('face generator not implemented!')
             
         print('---------- Networks initialized -------------')
+        self.save_hyperparameters()
+    
 
-        # load networks
-        if (not self.isTrain or opt.continue_train or opt.load_pretrain):
-            pretrained_path = '' if not self.isTrain else opt.load_pretrain
-            self.load_network(self.netG, 'G', opt.which_epoch, pretrained_path)            
-            if self.isTrain:
-                self.load_network(self.netD, 'D', opt.which_epoch, pretrained_path)
-                if opt.face_discrim:
-                    self.load_network(self.netDface, 'Dface', opt.which_epoch, pretrained_path)
-            if opt.face_generator:
-                self.load_network(self.faceGen, 'Gface', opt.which_epoch, pretrained_path)
-
+    def loss_func(self, opt):
         # set loss functions and optimizers
-        if self.isTrain:
-            if opt.pool_size > 0 and (len(self.gpu_ids)) > 1:
-                raise NotImplementedError("Fake Pool Not Implemented for MultiGPU")
-            self.fake_pool = ImagePool(opt.pool_size)
-            self.old_lr = opt.lr
+        if opt.pool_size > 0 and (len(self.gpu_ids)) > 1:
+            raise NotImplementedError("Fake Pool Not Implemented for MultiGPU")
+        self.fake_pool = ImagePool(opt.pool_size)
+        self.old_lr = opt.lr
 
-            # define loss functions
-            self.criterionGAN = networks.GANLoss(use_lsgan=not opt.no_lsgan, tensor=self.Tensor)   
-            self.criterionFeat = torch.nn.L1Loss()
-            if not opt.no_vgg_loss:             
-                self.criterionVGG = networks.VGGLoss()
-            if opt.use_l1:
-                self.criterionL1 = torch.nn.L1Loss()
-        
-            # Loss names
-            self.loss_names = ['G_GAN', 'G_GAN_Feat', 'G_VGG', 'D_real', 'D_fake', 'G_GANface', 'D_realface', 'D_fakeface']
+        # define loss functions
+        self.criterionGAN = networks.GANLoss(use_lsgan=not opt.no_lsgan, tensor=self.Tensor)   
+        self.criterionFeat = torch.nn.L1Loss()
+        if not opt.no_vgg_loss:             
+            self.criterionVGG = networks.VGGLoss()
+        if opt.use_l1:
+            self.criterionL1 = torch.nn.L1Loss()
+    
+        # Loss names
+        self.loss_names = ['G_GAN', 'G_GAN_Feat', 'G_VGG', 'D_real', 'D_fake', 'G_GANface', 'D_realface', 'D_fakeface']
 
-            # initialize optimizers
-            # optimizer G
-            if opt.niter_fix_global > 0:
-                print('------------- Only training the local enhancer network (for %d epochs) ------------' % opt.niter_fix_global)
-                params_dict = dict(self.netG.named_parameters())
-                params = []
-                for key, value in params_dict.items():       
-                    if key.startswith('model' + str(opt.n_local_enhancers)):
-                        params += [{'params':[value],'lr':opt.lr}]
-                    else:
-                        params += [{'params':[value],'lr':0.0}]                            
-            else:
-                params = list(self.netG.parameters())
 
-            if opt.face_generator:
-                params = list(self.faceGen.parameters())
-            else:
-                if opt.niter_fix_main == 0:
-                    params += list(self.netG.parameters())
-
-            self.optimizer_G = torch.optim.Adam(params, lr=opt.lr, betas=(opt.beta1, 0.999))                            
-
-            # optimizer D
-            if opt.niter_fix_main > 0:
-                print('------------- Only training the face discriminator network (for %d epochs) ------------' % opt.niter_fix_main)
-                params = list(self.netDface.parameters())                         
-            else:
-                if opt.face_discrim:
-                    params = list(self.netD.parameters()) + list(self.netDface.parameters())   
+    def configure_optimizers(self, ):
+        # initialize optimizers
+        # optimizer G
+        if self.opt.niter_fix_global > 0:
+            print('------------- Only training the local enhancer network (for %d epochs) ------------' % self.opt.niter_fix_global)
+            params_dict = dict(self.netG.named_parameters())
+            params = []
+            for key, value in params_dict.items():       
+                if key.startswith('model' + str(self.opt.n_local_enhancers)):
+                    params += [{'params':[value],'lr':self.opt.lr}]
                 else:
-                    params = list(self.netD.parameters())                  
+                    params += [{'params':[value],'lr':0.0}]                            
+        else:
+            params = list(self.netG.parameters())
 
-            self.optimizer_D = torch.optim.Adam(params, lr=opt.lr, betas=(opt.beta1, 0.999))
+        if self.opt.face_generator:
+            params = list(self.faceGen.parameters())
+        else:
+            if self.opt.niter_fix_main == 0:
+                params += list(self.netG.parameters())
 
-    def encode_input(self, label_map, real_image=None, next_label=None, next_image=None, zeroshere=None, infer=False):
+        self.optimizer_G = torch.optim.Adam(params, lr=self.opt.lr, betas=(self.opt.beta1, 0.999))                            
 
-        input_label = label_map.data.float().cuda()
-        input_label = Variable(input_label, volatile=infer)
+        # optimizer D
+        if self.opt.niter_fix_main > 0:
+            print('------------- Only training the face discriminator network (for %d epochs) ------------' % self.opt.niter_fix_main)
+            params = list(self.netDface.parameters())                         
+        else:
+            if self.opt.face_discrim:
+                params = list(self.netD.parameters()) + list(self.netDface.parameters())   
+            else:
+                params = list(self.netD.parameters())                  
 
-        # next label for training
-        if next_label is not None:
-            next_label = next_label.data.float().cuda()
-            next_label = Variable(next_label, volatile=infer)
+        self.optimizer_D = torch.optim.Adam(params, lr=self.opt.lr, betas=(self.opt.beta1, 0.999))
 
-        # real images for training
-        if real_image is not None:
-            real_image = Variable(real_image.data.float().cuda())
+        return [self.optimizer_G, self.optimizer_D]
 
-        # real images for training
-        if next_image is not None:
-            next_image = Variable(next_image.data.float().cuda())
-
-        if zeroshere is not None:
-            zeroshere = zeroshere.data.float().cuda()
-            zeroshere = Variable(zeroshere, volatile=infer)
-
-
-        return input_label, real_image, next_label, next_image, zeroshere
 
     def discriminate(self, input_label, test_image, use_pool=False):
         input_concat = torch.cat((input_label, test_image.detach()), dim=1)
@@ -178,10 +150,14 @@ class Pix2PixHDModel(pl.LightningModule):
         else:
             return self.netDface.forward(input_concat)
 
+
+
     def forward(self, label, next_label, image, next_image, face_coords, zeroshere, infer=False):
         # Encode Inputs
         input_label, real_image, next_label, next_image, zeroshere = self.encode_input(label, image, \
                      next_label=next_label, next_image=next_image, zeroshere=zeroshere)
+        
+
         if self.opt.face_discrim:
             miny = face_coords.data[0][0]
             maxy = face_coords.data[0][1]
@@ -295,9 +271,16 @@ class Pix2PixHDModel(pl.LightningModule):
             loss_G_VGG += (self.criterionL1(I_1, next_image)) * self.opt.lambda_A
         
         # Only return the fake_B image if necessary to save BW
-        return [ [ loss_G_GAN, loss_G_GAN_Feat, loss_G_VGG, loss_D_real, loss_D_fake, \
-                    loss_G_GAN_face, loss_D_real_face,  loss_D_fake_face], \
-                        None if not infer else [torch.cat((I_0, I_1), dim=3), fake_face, face_residual, initial_I_0] ]
+        return [[loss_G_GAN, loss_G_GAN_Feat, loss_G_VGG, loss_D_real, loss_D_fake, loss_G_GAN_face, loss_D_real_face,  loss_D_fake_face], 
+            None if not infer else [torch.cat((I_0, I_1), dim=3), fake_face, face_residual, initial_I_0]]
+
+    def training_step(self, batch, batch_idx, mode="train"):
+        input_label = batch["label_1"]
+        next_label = batch["label_2"]
+        real_image = batch["rgb_1"]
+        next_image = batch["rgb_2"]
+        zeroshere = torch.zeros(input_label).float()
+        
 
     def inference(self, label, prevouts, face_coords):
 
@@ -364,3 +347,16 @@ class Pix2PixHDModel(pl.LightningModule):
             param_group['lr'] = lr
         print('update learning rate: %f -> %f' % (self.old_lr, lr))
         self.old_lr = lr
+
+    def load_network(self, opt):
+        # load networks
+        if (not self.isTrain or opt.continue_train or opt.load_pretrain):
+            pretrained_path = '' if not self.isTrain else opt.load_pretrain
+            self.load_network(self.netG, 'G', opt.which_epoch, pretrained_path)            
+            if self.isTrain:
+                self.load_network(self.netD, 'D', opt.which_epoch, pretrained_path)
+                if opt.face_discrim:
+                    self.load_network(self.netDface, 'Dface', opt.which_epoch, pretrained_path)
+            if opt.face_generator:
+                self.load_network(self.faceGen, 'Gface', opt.which_epoch, pretrained_path)
+

@@ -43,6 +43,7 @@ def define_G(input_nc, output_nc, ngf, netG, n_downsample_global=3, n_blocks_glo
                  norm_layer=nn.BatchNorm2d, use_dropout=False)
     else:
         raise('generator not implemented!')
+
     print(netG)
     # if len(gpu_ids) > 0:
     #     assert(torch.cuda.is_available())   
@@ -53,13 +54,14 @@ def define_G(input_nc, output_nc, ngf, netG, n_downsample_global=3, n_blocks_glo
 def define_D(input_nc, ndf, n_layers_D, norm='instance', use_sigmoid=False, num_D=1, getIntermFeat=False, netD='multi'):
     if netD == 'multi':        
         norm_layer = get_norm_layer(norm_type=norm)   
+        # print(input_nc, ndf, n_layers_D, norm_layer, use_sigmoid, num_D, getIntermFeat)
         netD = MultiscaleDiscriminator(input_nc, ndf, n_layers_D, norm_layer, use_sigmoid, num_D, getIntermFeat)   
     elif netD == 'face':
         netD = NLayerDiscriminator(input_nc, ndf=64, n_layers=n_layers_D, norm_layer=nn.BatchNorm2d, use_sigmoid=False, 
                             getIntermFeat=False, addname='face')
     else:
         raise('discriminator not implemented!')
-    print(netD)
+    # print(netD)
     # if len(gpu_ids) > 0:
     #     assert(torch.cuda.is_available())
     #     netD.cuda(gpu_ids[0])
@@ -334,7 +336,7 @@ class MultiscaleDiscriminator(nn.Module):
         else:
             return [model(input)]
 
-    def forward(self, input):        
+    def forward(self, input):    
         num_D = self.num_D
         result = []
         input_downsampled = input
@@ -519,3 +521,11 @@ class Vgg19(torch.nn.Module):
         h_relu5 = self.slice5(h_relu4)                
         out = [h_relu1, h_relu2, h_relu3, h_relu4, h_relu5]
         return out
+
+
+if __name__ == "__main__":
+    x = torch.randn(4, 12, 256, 256)
+    model = MultiscaleDiscriminator(12, 64, 3, nn.InstanceNorm2d, False, 2, True)
+
+    out = model(x)
+    print(len(out), len(out[0]), out[0][0].shape)

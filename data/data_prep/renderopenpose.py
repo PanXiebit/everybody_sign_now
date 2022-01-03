@@ -13,8 +13,9 @@ from shutil import copyfile
 # from skimage import img_as_float
 from math import sqrt
 from functools import reduce
-from pose_object import Pose
+from .pose_object import Pose
 import os
+import torch
 
 gaussconst = 2000
 
@@ -101,7 +102,7 @@ def map_25_to_23(posepts):
 	posepts23[2::3] = posepts[2::3][mapping]
 	return posepts23
 
-def scale_resize(curshape, myshape=(1080, 1920, 3), mean_height=0.0):
+def scale_resize(curshape, myshape=(1080, 1920, 3)):
 
 	if curshape == myshape:
 		return None
@@ -126,19 +127,26 @@ def scale_resize(curshape, myshape=(1080, 1920, 3), mean_height=0.0):
 	return y_mult, (0.0, translate_x)
 
 def fix_scale_image(image, scale, translate, myshape):
-	M = np.float32([[scale,0,translate[0]],[0,scale,translate[1]]])
-	dst = cv.warpAffine(image,M,(myshape[1],myshape[0]))
-	return dst
+	"""image.shape: [720, 1280, 3]
+	   scale: 0.2. bsz 256/1280 < 256/7120
+	   translate: (0.0, 56.0)
+	   myshape: (256, 256)
+	"""
+	print(image.shape)
+	print(scale, translate, myshape)
+	M = np.float32([[scale, 0, translate[0]],[0, scale, translate[1]]])
+	dst = cv.warpAffine(image.numpy(), M, (myshape[1], myshape[0]))
+	return torch.FloatTensor(dst)
 
 def fix_scale_coords(points, scale, translate):
 	points = np.array(points)
 
-	points[0::3] = scale * points[0::3] + translate[0]
-	points[1::3] = scale * points[1::3] + translate[1]
+	points[0::3] = scale * (points[0::3] + translate[0])
+	points[1::3] = scale * (points[1::3] + translate[1])
 
 	return list(points)
 
-def makebox128(miny, maxy, minx, maxx, dimy=128, dimx=128):
+def makebox128(miny, maxy, minx, maxx, dimy=128, dimx=128, endy=720, endx=1280):
 	diffy = maxy - miny
 	diffx = maxx - minx
 	# print "diffyb", maxy - miny
@@ -149,9 +157,9 @@ def makebox128(miny, maxy, minx, maxx, dimy=128, dimx=128):
 		maxy = maxy + (howmuch //2)
 		miny = maxy - dimy
 
-		if maxy > 512:
-			maxy = 512
-			miny = 512 - dimy
+		if maxy > endy:
+			maxy = endy
+			miny = endy - dimy
 		roomtoedge = miny
 		if miny < 0:
 			miny = 0
@@ -162,16 +170,14 @@ def makebox128(miny, maxy, minx, maxx, dimy=128, dimx=128):
 		maxx = maxx + (howmuch //2)
 		minx = maxx - dimx
 
-		if maxx > 1024:
-			maxx = 1024
-			minx = 1024 - dimx
+		if maxx > endx:
+			maxx = endx
+			minx = endx - dimx
 		roomtoedge = minx
 		if minx < 0:
 			minx = 0
 			maxx = dimx
 
-	# print "diffy", maxy - miny
-	# print "diffx", maxx - minx
 	return miny, maxy, minx, maxx
 
 def renderposeCOCO(posepts, canvas, keyname=""):

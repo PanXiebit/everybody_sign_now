@@ -17,6 +17,7 @@ class BaseOptions():
         self.parser.add_argument('--checkpoints_dir', type=str, default='./checkpoints', help='models are saved here')
         self.parser.add_argument('--norm', type=str, default='instance', help='instance normalization or batch normalization')        
         self.parser.add_argument('--use_dropout', action='store_true', help='use dropout for the generator')
+        self.parser.add_argument('--num_workers', type=int, default=24, help='')
 
         # input/output sizes       
         self.parser.add_argument('--batchSize', type=int, default=1, help='input batch size')
@@ -27,6 +28,8 @@ class BaseOptions():
 
         # for setting inputs
         self.parser.add_argument('--dataroot', type=str, default='./datasets/cityscapes/') 
+        self.parser.add_argument('--csv_path', type=str, default='./Data') 
+        self.parser.add_argument('--data_path', type=str, default='./Data/how2sign') 
         self.parser.add_argument('--resize_or_crop', type=str, default='scale_width', help='scaling and cropping of images at load time [resize_and_crop|crop|scale_width|scale_width_and_crop]')
         self.parser.add_argument('--serial_batches', action='store_true', help='if true, takes images in order to make batches, otherwise takes them randomly')        
         self.parser.add_argument('--no_flip', action='store_true', help='if specified, do not flip the images for data argumentation') 
@@ -57,11 +60,12 @@ class BaseOptions():
         self.parser.add_argument('--n_clusters', type=int, default=10, help='number of clusters for features')
 
         # for face discriminator
-        self.parser.add_argument('--face_discrim', action='store_true', help='if specified, add a face discriminator')
+        self.parser.add_argument('--hand_discrim', action='store_true', help='if specified, add a face discriminator')
         self.parser.add_argument('--niter_fix_main', type=int, default=0, help='number of epochs that we only train the face discriminator')        
 
         #for face generator
         self.parser.add_argument('--face_generator', action='store_true', help='if specified, add a face residual prediction generator')
+        self.parser.add_argument('--hand_generator', action='store_true', help='if specified, add a face residual prediction generator')
         self.parser.add_argument('--faceGtype', type=str, default='unet', help='selects architecture to use for face generator, choose from a UNet generator or global generator [unet|global]')
 
         # for gestures, only do 64 frame segments
