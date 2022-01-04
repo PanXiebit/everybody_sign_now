@@ -44,7 +44,7 @@ def define_G(input_nc, output_nc, ngf, netG, n_downsample_global=3, n_blocks_glo
     else:
         raise('generator not implemented!')
 
-    print(netG)
+    # print(netG)
     # if len(gpu_ids) > 0:
     #     assert(torch.cuda.is_available())   
     #     netG.cuda(gpu_ids[0])

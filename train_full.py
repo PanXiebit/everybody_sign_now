@@ -17,14 +17,12 @@ def main():
 
     data = How2SignImagePairData(opt)
     data.train_dataloader()
-    exit()
 
     data.test_dataloader()
     model = Pix2PixHDModel(opt)
     
     callbacks = []
-    callbacks.append(ModelCheckpoint(monitor='val/recon_loss', mode='min',
-        filename='{epoch}-{step}', save_top_k=1))
+    callbacks.append(ModelCheckpoint(monitor=None, filename='{epoch}-{step}', save_top_k=1))
 
     kwargs = dict()
     if opt.gpus > 1:

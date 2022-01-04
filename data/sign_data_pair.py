@@ -50,8 +50,8 @@ class ImagePairDataset(data.Dataset):
         data = pd.read_csv(csv_path, on_bad_lines='skip', delimiter="\t")
         
         sequence_length = 2
-        frames_between_clips = 8
-        debug = 6
+        frames_between_clips = 12
+        debug = 0
         warnings.filterwarnings('ignore')
         rgb_cache_file = osp.join(data_path, tag, f"rgb_vid_metadata_{debug}_{sequence_length}_{frames_between_clips}.pkl")
         key_cache_file = osp.join(data_path, tag, f"kyp_vid_metadata_{debug}_{sequence_length}_{frames_between_clips}.pkl")
@@ -83,21 +83,21 @@ class ImagePairDataset(data.Dataset):
         print("{} video number is: {}/{}".format(tag, len(rgb_video_files), len(data)))
         
         if not osp.exists(rgb_cache_file):
-            rgb_clips = VideoClips(rgb_video_files, sequence_length, frames_between_clips=frames_between_clips, num_workers=32)
+            rgb_clips = VideoClips(rgb_video_files, sequence_length, frames_between_clips=frames_between_clips, num_workers=24)
             pickle.dump(rgb_clips.metadata, open(rgb_cache_file, 'wb'))
         else:
             metadata = pickle.load(open(rgb_cache_file, 'rb'))
-            rgb_clips = VideoClips(rgb_video_files, sequence_length, _precomputed_metadata=metadata)
+            rgb_clips = VideoClips(rgb_video_files, sequence_length, frames_between_clips=frames_between_clips, _precomputed_metadata=metadata)
         self.rgb_vid_clips = rgb_clips
 
         warnings.filterwarnings('ignore')
         
         if not osp.exists(key_cache_file):
-            key_clips = VideoClips(kyp_video_files, sequence_length, frames_between_clips=frames_between_clips, num_workers=32)
+            key_clips = VideoClips(kyp_video_files, sequence_length, frames_between_clips=frames_between_clips, num_workers=24)
             pickle.dump(key_clips.metadata, open(key_cache_file, 'wb'))
         else:
             metadata = pickle.load(open(key_cache_file, 'rb'))
-            key_clips = VideoClips(kyp_video_files, sequence_length, _precomputed_metadata=metadata)
+            key_clips = VideoClips(kyp_video_files, sequence_length, frames_between_clips=frames_between_clips, _precomputed_metadata=metadata)
         self.key_vid_clips = key_clips
 
         print("rgb_videos, key_videos clip number: {}, {}".format(len(self.rgb_vid_clips), len(self.key_vid_clips)))
@@ -105,7 +105,7 @@ class ImagePairDataset(data.Dataset):
         if not osp.exists(key_rhand_cache_file) or not osp.exists(key_lhand_cache_file):
             with open(key_rhand_cache_file, "w") as rw, open(key_lhand_cache_file, "w") as lw:
                 for k, key_json_path in tqdm(enumerate(key_json_files)):
-                    json_files = sorted(os.listdir(key_json_path))[::frames_between_clips]
+                    json_files = sorted(os.listdir(key_json_path))[:-(sequence_length-1)][::frames_between_clips]
                     for json_file in json_files:
                         posepts, facepts, r_handpts, l_handpts = self.readkeypointsfile_json(os.path.join(key_json_path, json_file))
                         rw.write(" ".join([str(k) for k in r_handpts]) + "\n")
@@ -115,24 +115,8 @@ class ImagePairDataset(data.Dataset):
         print("rhand, lhand clip number: ", len(self.kyp_rhands), len(self.kyp_lhands))
 
 
-    def readkeypointsfile_json(self, myfile):
-        f = open(myfile, 'r')
-        json_dict = json.load(f)
-        people = json_dict['people']
-        posepts =[]
-        facepts = []
-        r_handpts = []
-        l_handpts = []
-        for p in people:
-            posepts += p['pose_keypoints_2d']
-            facepts += p['face_keypoints_2d']
-            r_handpts += p['hand_right_keypoints_2d']
-            l_handpts += p['hand_left_keypoints_2d']
-        return posepts, facepts, r_handpts, l_handpts
-
-
     def __len__(self):
-        return len(self.rgb_vid_clips)
+        return len(self.key_vid_clips)
 
     def __getitem__(self, idx):
         label, _, _, _, key_vid_0 = self.key_vid_clips.get_clip(idx) # change the source code: add video_path as an output.
@@ -144,10 +128,12 @@ class ImagePairDataset(data.Dataset):
         # print("key_vid_0, key_vid_1", key_vid_0, key_vid_1)
         # print("rgb_path_0, rgb_path_1", rgb_path_0, rgb_path_1)
         # print("\n")
-
-        rhands_0 = list(map(float, self.kyp_rhands[idx].strip().split()))
-        lhands_0 = list(map(float, self.kyp_lhands[idx].strip().split()))
-
+        try:
+            rhands_0 = list(map(float, self.kyp_rhands[idx].strip().split()))
+            lhands_0 = list(map(float, self.kyp_lhands[idx].strip().split()))
+        except:
+            print(key_vid_0, len(self.kyp_rhands[idx].strip().split()))
+            print(key_vid_0, len(self.kyp_lhands[idx].strip().split()))
         
         # crop image
         (rgb_0, rgb_1, label_0, label_1), (lhands_0, rhands_0) = self.crop_and_resize(
@@ -164,6 +150,21 @@ class ImagePairDataset(data.Dataset):
     def normalize(self, vid):
         img = vid.float() / 127.5
         return img - 1.0
+
+    def readkeypointsfile_json(self, myfile):
+        f = open(myfile, 'r')
+        json_dict = json.load(f)
+        people = json_dict['people']
+        posepts =[]
+        facepts = []
+        r_handpts = []
+        l_handpts = []
+        for p in people:
+            posepts += p['pose_keypoints_2d']
+            facepts += p['face_keypoints_2d']
+            r_handpts += p['hand_right_keypoints_2d']
+            l_handpts += p['hand_left_keypoints_2d']
+        return posepts, facepts, r_handpts, l_handpts
 
     def crop_and_resize(self, images, cropped_shape, resize_shape, hands_points):
         # crop and resize
