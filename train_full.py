@@ -6,6 +6,9 @@ import argparse
 from models.pix2pixHD_model import Pix2PixHDModel
 from pytorch_lightning.callbacks import ModelCheckpoint
 from data.sign_data_pair import How2SignImagePairData
+from util.util import CheckpointEveryNSteps
+
+
 
 def main():
     pl.seed_everything(1234)
@@ -17,12 +20,13 @@ def main():
 
     data = How2SignImagePairData(opt)
     data.train_dataloader()
-
     data.test_dataloader()
     model = Pix2PixHDModel(opt)
+    # model = model.load_from_checkpoint("lightning_logs/version_1/checkpoints/N-Step-Checkpoint_epoch=0_global_step=6000.ckpt")
     
     callbacks = []
     callbacks.append(ModelCheckpoint(monitor=None, filename='{epoch}-{step}', save_top_k=1))
+    callbacks.append(CheckpointEveryNSteps(6000, 2))
 
     kwargs = dict()
     if opt.gpus > 1:

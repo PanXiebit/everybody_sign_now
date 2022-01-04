@@ -18,9 +18,9 @@ An unofficial implementation of ["Can Everybody Sign Now? Exploring Sign Languag
                     - json
                     - video
                 - videos
-        how2sign_train.csv
-    how2sign_val.csv
+        - how2sign_train.csv
+        - how2sign_val.csv
     ```
 
-This source code is inspired by both [Everybody Dance Now](https://carolineec.github.io/everybody_dance_now/).
+This source code is highly borrowed from [Everybody Dance Now](https://carolineec.github.io/everybody_dance_now/).
 

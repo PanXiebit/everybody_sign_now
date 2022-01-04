@@ -49,9 +49,9 @@ class ImagePairDataset(data.Dataset):
 
         data = pd.read_csv(csv_path, on_bad_lines='skip', delimiter="\t")
         
-        sequence_length = 2
-        frames_between_clips = 12
-        debug = 0
+        sequence_length = 4
+        frames_between_clips = 8
+        debug = 5
         warnings.filterwarnings('ignore')
         rgb_cache_file = osp.join(data_path, tag, f"rgb_vid_metadata_{debug}_{sequence_length}_{frames_between_clips}.pkl")
         key_cache_file = osp.join(data_path, tag, f"kyp_vid_metadata_{debug}_{sequence_length}_{frames_between_clips}.pkl")
@@ -64,8 +64,7 @@ class ImagePairDataset(data.Dataset):
 
         for i in tqdm(range(len(data))):
             if debug and i >= debug: break
-            if "CTERDLghzFw_7-8-rgb_front" == data["SENTENCE_NAME"][i]: 
-                continue
+            if "CTERDLghzFw_7-8-rgb_front" == data["SENTENCE_NAME"][i]: continue
             video_path = os.path.join(video_folder, data["SENTENCE_NAME"][i] + ".mp4")
             key_video_path = os.path.join(keypoint_folder, "video", data["SENTENCE_NAME"][i] + ".mp4")
             key_json_path = os.path.join(keypoint_folder, "json", data["SENTENCE_NAME"][i])
@@ -120,17 +119,18 @@ class ImagePairDataset(data.Dataset):
         return len(self.key_vid_clips)
 
     def __getitem__(self, idx):
-        label, _, _, label_idx, key_vid_0 = self.key_vid_clips.get_clip(idx) # change the source code: add video_path as an output.
+        label, _, _, _, key_vid_0 = self.key_vid_clips.get_clip(idx) # change the source code: add video_path as an output.
 
         label_0, label_1 = self.normalize(label[0]), self.normalize(label[1])
 
-        rgb, _, _, rgb_idx, rgb_path_0 = self.rgb_vid_clips.get_clip(idx)
+        rgb, _, _, _, rgb_path_0 = self.rgb_vid_clips.get_clip(idx)
         rgb_0, rgb_1 = self.normalize(rgb[0]), self.normalize(rgb[1])
+        # print("key_vid_0, key_vid_1", key_vid_0, key_vid_1)
+        # print("rgb_path_0, rgb_path_1", rgb_path_0, rgb_path_1)
+        # print("\n")
 
         rhands_0 = list(map(float, self.kyp_rhands[idx].strip().split()))
         lhands_0 = list(map(float, self.kyp_lhands[idx].strip().split()))
-        assert label_idx == rgb_idx, (label_idx, rgb_idx)
-        assert os.path.basename(key_vid_0) == os.path.basename(rgb_path_0), (os.path.basename(key_vid_0), os.path.basename(rgb_path_0))
         
         # crop image
         (rgb_0, rgb_1, label_0, label_1), (lhands_0, rhands_0) = self.crop_and_resize(
@@ -293,7 +293,7 @@ if __name__ == "__main__":
     # dataloader = ImagePairDataset(opts)
 
     for i, data in enumerate(dataloader):
-        if i > 200: break
+        if i > 20: break
         print(data["label_0"].shape)
         print(data["label_1"].shape)
         print(data["rgb_0"].shape)

@@ -2,16 +2,10 @@
 ### Licensed under the CC BY-NC-SA 4.0 license (https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode).
 import numpy as np
 import torch
-import os
-from collections import OrderedDict
-from torch.autograd import Variable
-import util.util as util
 from util.image_pool import ImagePool
-from .base_model import BaseModel
 from . import networks
 import pytorch_lightning as pl
 import torchvision
-
 
 
 class Pix2PixHDModel(pl.LightningModule):
@@ -213,7 +207,7 @@ class Pix2PixHDModel(pl.LightningModule):
         pred_fake_pool = self.discriminate_4(input_label, next_label, I_0, I_1, use_pool=True)
 
         # visualize
-        if batch_idx % 5 == 0:            
+        if batch_idx % 6000 == 0:            
             input_label_vis = (torch.clamp(input_label, -1, 1.0) + 1.0) / 2
             real_image_vis = (torch.clamp(real_image, -1, 1.0) + 1.0) / 2
             pred_image_vis = (torch.clamp(I_0, -1, 1.0) + 1.0) / 2 

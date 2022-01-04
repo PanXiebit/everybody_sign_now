@@ -9,6 +9,8 @@ import numpy as np
 import os
 import collections
 from PIL import Image
+import pytorch_lightning as pl
+
 
 # Converts a Tensor into a Numpy array
 # |imtype|: the desired type of the converted numpy array
@@ -98,3 +100,50 @@ class Colorize(object):
             color_image[2][mask] = self.cmap[label][2]
 
         return color_image
+
+
+
+class CheckpointEveryNSteps(pl.Callback):
+    """
+    Save a checkpoint every N steps, instead of Lightning's default that checkpoints
+    based on validation loss.
+    """
+    def __init__(
+        self,
+        save_step_frequency,
+        save_num,
+        prefix="Checkpoint",
+        use_modelcheckpoint_filename=False,
+    ):
+        """
+        Args:
+            save_step_frequency: how often to save in steps
+            prefix: add a prefix to the name, only used if
+                use_modelcheckpoint_filename=False
+            use_modelcheckpoint_filename: just use the ModelCheckpoint callback's
+                default filename, don't use ours.
+        """
+        self.save_step_frequency = save_step_frequency
+        self.prefix = prefix
+        self.use_modelcheckpoint_filename = use_modelcheckpoint_filename
+        self.save_ckpt = []
+        self.save_num = save_num
+
+    def on_batch_end(self, trainer: pl.Trainer, _):
+        """ Check if we should save a checkpoint after every train batch """
+        epoch = trainer.current_epoch
+        global_step = trainer.global_step
+        if global_step % self.save_step_frequency == 0:
+            if self.use_modelcheckpoint_filename:
+                filename = trainer.checkpoint_callback.filename
+            else:
+                filename = f"{self.prefix}_{epoch=}_{global_step=}.ckpt"
+            ckpt_path = os.path.join(trainer.checkpoint_callback.dirpath, filename)
+            self.save_ckpt.append(ckpt_path)
+            
+            if len(self.save_ckpt) == self.save_num + 1:
+                if len(self.save_ckpt) > 0:
+                    del_path = self.save_ckpt.pop(0)
+                    if os.path.exists(del_path):
+                        os.remove(del_path)
+            trainer.save_checkpoint(ckpt_path)
