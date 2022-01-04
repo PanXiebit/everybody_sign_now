@@ -16,7 +16,10 @@ def main():
     print(opt)
 
     data = How2SignImagePairData(opt)
-    data = data.train_dataloader()
+    data.train_dataloader()
+    exit()
+
+    data.test_dataloader()
     model = Pix2PixHDModel(opt)
     
     callbacks = []

@@ -215,17 +215,13 @@ class Pix2PixHDModel(pl.LightningModule):
         # visualize
         if batch_idx % 5 == 0:            
             input_label_vis = (torch.clamp(input_label, -1, 1.0) + 1.0) / 2
-            input_label_vis = torchvision.utils.make_grid(input_label_vis[0])
             real_image_vis = (torch.clamp(real_image, -1, 1.0) + 1.0) / 2
-            real_image_vis = torchvision.utils.make_grid(real_image_vis[0])
-
             pred_image_vis = (torch.clamp(I_0, -1, 1.0) + 1.0) / 2 
-            pred_image_vis = torchvision.utils.make_grid(pred_image_vis[0])
 
+            vis = torch.cat([input_label_vis, real_image_vis, pred_image_vis], dim=0)
+            vis = torchvision.utils.make_grid(vis, 3)
 
-            self.logger.experiment.add_image("input_label", input_label_vis, self.global_step)
-            self.logger.experiment.add_image("real_image", real_image_vis, self.global_step)
-            self.logger.experiment.add_image("pred_image", pred_image_vis, self.global_step)
+            self.logger.experiment.add_image("train/label-real-pred", vis, self.global_step)
 
         if optimizer_idx == 0:
             if self.opt.hand_discrim:
@@ -336,7 +332,6 @@ class Pix2PixHDModel(pl.LightningModule):
         input_concat = torch.cat((input_label, prevouts), dim=1) 
         initial_I_0 = self.netG.forward(input_concat)
 
-        
 
         if self.opt.hand_generator:
             lhand_label_0 = input_label[:, :, l_miny:l_maxy, l_minx:l_maxx]
@@ -348,17 +343,13 @@ class Pix2PixHDModel(pl.LightningModule):
             I_0 = initial_I_0
         
         input_label_vis = (torch.clamp(input_label, -1, 1.0) + 1.0) / 2
-        input_label_vis = torchvision.utils.make_grid(input_label_vis[0])
         real_image_vis = (torch.clamp(real_image, -1, 1.0) + 1.0) / 2
-        real_image_vis = torchvision.utils.make_grid(real_image_vis[0])
+        pred_image_vis = (torch.clamp(I_0, -1, 1.0) + 1.0) / 2 
 
-        pred_image_vis = (torch.clamp(initial_I_0, -1, 1.0) + 1.0) / 2 
-        pred_image_vis = torchvision.utils.make_grid(pred_image_vis[0])
+        vis = torch.cat([input_label_vis, real_image_vis, pred_image_vis], dim=0)
+        vis = torchvision.utils.make_grid(vis, 3)
 
-
-        self.logger.experiment.add_image("input_label", input_label_vis, self.current_epoch)
-        self.logger.experiment.add_image("real_image", real_image_vis, self.current_epoch)
-        self.logger.experiment.add_image("pred_image", pred_image_vis, self.current_epoch)
+        self.logger.experiment.add_image("val/label-real-pred", vis, self.global_step)
 
         return I_0
 
