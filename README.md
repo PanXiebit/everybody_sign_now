@@ -1,6 +1,7 @@
 # everybody_sign_now
 An unofficial implementation of ["Can Everybody Sign Now? Exploring Sign Language Video Generation from 2D Poses"](https://arxiv.org/pdf/2012.10941.pdf).
-
+![](images/res.png)
+![](images/res1.png)
 
 ## Dataset Preparation
 - how2sign: https://how2sign.github.io/#download
