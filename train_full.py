@@ -22,7 +22,7 @@ def main():
     data.train_dataloader()
     data.test_dataloader()
     model = Pix2PixHDModel(opt)
-    model = model.load_from_checkpoint("lightning_logs/version_0/checkpoints/Checkpoint_epoch=0_global_step=72000.ckpt")
+    model = model.load_from_checkpoint("lightning_logs/version_1/checkpoints/Checkpoint_epoch=0_global_step=72000.ckpt")
     
     callbacks = []
     callbacks.append(ModelCheckpoint(monitor=None, filename='{epoch}-{step}', save_top_k=1))
