@@ -24,6 +24,8 @@ from PIL import Image
 from .data_prep.renderopenpose import makebox128, fix_scale_image, fix_scale_coords, scale_resize
 import torchvision.transforms as transforms
 
+
+
 class ImagePairDataset(data.Dataset):
     """ Generic dataset for videos files stored in folders
     Returns BCTHW videos in the range [-0.5, 0.5] """
@@ -118,6 +120,7 @@ class ImagePairDataset(data.Dataset):
     def __len__(self):
         return len(self.key_vid_clips)
 
+
     def __getitem__(self, idx):
         label, _, _, _, key_vid_0 = self.key_vid_clips.get_clip(idx) # change the source code: add video_path as an output.
 
@@ -125,9 +128,6 @@ class ImagePairDataset(data.Dataset):
 
         rgb, _, _, _, rgb_path_0 = self.rgb_vid_clips.get_clip(idx)
         rgb_0, rgb_1 = self.normalize(rgb[0]), self.normalize(rgb[1])
-        # print("key_vid_0, key_vid_1", key_vid_0, key_vid_1)
-        # print("rgb_path_0, rgb_path_1", rgb_path_0, rgb_path_1)
-        # print("\n")
 
         rhands_0 = list(map(float, self.kyp_rhands[idx].strip().split()))
         lhands_0 = list(map(float, self.kyp_lhands[idx].strip().split()))
@@ -144,9 +144,11 @@ class ImagePairDataset(data.Dataset):
                     lhand_0_coords=lhand_0_coords,
                     rhand_0_coords=rhand_0_coords)
 
+
     def normalize(self, vid):
         img = vid.float() / 127.5
         return img - 1.0
+
 
     def readkeypointsfile_json(self, myfile):
         f = open(myfile, 'r')
@@ -162,6 +164,7 @@ class ImagePairDataset(data.Dataset):
             r_handpts += p['hand_right_keypoints_2d']
             l_handpts += p['hand_left_keypoints_2d']
         return posepts, facepts, r_handpts, l_handpts
+
 
     def crop_and_resize(self, images, cropped_shape, resize_shape, hands_points):
         # crop and resize

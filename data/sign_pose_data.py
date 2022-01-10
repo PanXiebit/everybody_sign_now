@@ -25,6 +25,10 @@ from PIL import Image
 from .data_prep.renderopenpose import makebox128, fix_scale_image, fix_scale_coords, scale_resize
 import torchvision.transforms as transforms
 
+POSE_MAX_X = 1280
+POSE_MAX_Y = 720
+POSE_MIN_X = -1280
+POSE_MIN_Y = -720
 
 
 class PoseDataset(data.Dataset):
@@ -52,7 +56,7 @@ class PoseDataset(data.Dataset):
 
         data = pd.read_csv(csv_path, on_bad_lines='skip', delimiter="\t")
         
-        debug = 10
+        debug = 0
 
         key_json_paths = []
 
@@ -88,27 +92,67 @@ class PoseDataset(data.Dataset):
             self._clips = np.concatenate(clips, axis=0)
             np.save(keypoints_cache_file, self._clips)
         else:
-            self.clips = np.load(keypoints_cache_file)
+            self._clips = np.load(keypoints_cache_file)
 
     def __len__(self):
-        return len(self.clips)
+        return len(self._clips)
 
 
     def __getitem__(self, idx):
-        keypoints = self.clips[idx]
-        pose = self._get_x_y(keypoints[:, :75])
-        face = self._get_x_y(keypoints[:, 75:75+210])
-        rhand = self._get_x_y(keypoints[:, 75+210:75+210+63])
-        lhand = self._get_x_y(keypoints[:, 75+210+63:75+210+63+63])
-        return dict(pose=pose, face=face, rhand=rhand, lhand=lhand)
+        keypoints = self._clips[idx]
+
+        pose_anchor = [1]
+        pose, pose_no_mask = self._get_x_y_and_normalize(keypoints[:, :75], pose_anchor)
+        
+        face_anchor = [33]
+        face, face_no_mask = self._get_x_y_and_normalize(keypoints[:, 75:75+210], face_anchor)
+
+        hand_anchor = [0]
+        rhand, rhand_no_mask = self._get_x_y_and_normalize(keypoints[:, 75+210:75+210+63], hand_anchor)
+        lhand, lhand_no_mask = self._get_x_y_and_normalize(keypoints[:, 75+210+63:75+210+63+63], hand_anchor)
+        return dict(pose=pose, pose_no_mask=pose_no_mask,
+                    face=face, face_no_mask=face_no_mask,
+                    rhand=rhand, rhand_no_mask=rhand_no_mask, 
+                    lhand=lhand, lhand_no_mask=lhand_no_mask)
     
 
-    def _get_x_y(self, points_array):
+    def _get_x_y_and_normalize(self, points_array, anchor_ids):
         points_array = np.expand_dims(points_array, axis=0) # [1, T, 3*V]
-        x_points = points_array[:, :, ::3] / 640
-        y_points = points_array[:, :, 1::3] / 360
+        x_points = points_array[:, :, ::3]  # [1, T, V]
+        y_points = points_array[:, :, 1::3] # [1, T, V]
+        probs = points_array[:, :, 2::3]    # [1, T, V]
+
+        no_mask = (probs != 0).astype(np.float32) # [1, T, V]
+
+        # print(probs[:, :2, :], no_mask[:, :2, :])
+        no_mask_anchor = no_mask[:, :, anchor_ids] # [1, T, 1]
+
+
+        x_anchor = x_points[:, :, anchor_ids] # [1, T, 1]
+        y_anchor = y_points[:, :, anchor_ids] # [1, T, 1]
+
+        
+
+        if (x_anchor == 0).any() or (y_anchor == 0).any():
+            
+            # print(x_anchor, y_anchor)
+            x_anchor = np.mean(x_anchor) * (1 - no_mask_anchor) + x_anchor
+            y_anchor = np.mean(y_anchor) * (1 - no_mask_anchor) + y_anchor            
+
+            # raise ValueError("{}, {} is zero".format(x_anchor, y_anchor))
+
+        # x_points = (x_points - x_anchor) * no_mask
+        # y_points = (y_points - y_anchor) * no_mask
+
+        # x_points = x_points / (max(np.abs(np.min(x_points)), np.abs(np.max(x_points))) + 1e-7)
+        # y_points = y_points / (max(np.abs(np.min(y_points)), np.abs(np.max(y_points))) + 1e-7)
+
+        # print(x_points[:, :2, :], y_points[:, :2, :])
+        x_points = (x_points - x_anchor) / 640.
+        y_points = (y_points - y_anchor) / 360.
+
         points = np.concatenate([x_points, y_points], axis=0)
-        return torch.FloatTensor(points - 1.0).clamp_(-1., 1.)
+        return torch.FloatTensor(points - 1.0).clamp_(-1., 1.), no_mask
 
 
     def readkeypointsfile_json(self, myfile):
@@ -184,11 +228,12 @@ if __name__ == "__main__":
     opts= Option()
 
     # dataloader = How2SignImagePairData(opts).train_dataloader()
-    dataloader = ImagePairDataset(opts)
+    dataloader = PoseDataset(opts)
 
     for data in dataloader:
-        print(data["pose"].shape)
-        print(data["face"].shape)
-        print(data["rhand"].shape)
-        print(data["lhand"].shape)
+        print("")
+        # print("pose: ", data["pose"].shape)
+        # print("face: ", data["face"].shape)
+        # print("rhand: ", data["rhand"].shape)
+        # print("lhand: ", data["lhand"].shape)
     # exit()
