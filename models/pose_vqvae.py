@@ -8,6 +8,9 @@ import torch.distributed as dist
 import argparse
 from modules.utils import shift_dim
 import numpy as np
+from data.data_prep.renderopenpose import *
+import torchvision
+import cv2
 
 
 def zero(x):
@@ -84,7 +87,8 @@ class PoseVQVAE(pl.LightningModule):
 
 
     def forward(self, batch, mode):
-        pose, face, rhand, lhand = batch["pose"], batch["face"], batch["rhand"], batch["lhand"]
+        pose, face, rhand, lhand = batch["pose"], batch["face"], batch["rhand"], batch["lhand"] # [bs, c, t, v]
+
         pose_no_mask, face_no_mask, rhand_no_mask, lhand_no_mask = batch["pose_no_mask"], batch["face_no_mask"], batch["rhand_no_mask"], batch["lhand_no_mask"]
 
         pose_pred = self.reconstruction(pose, "pose")
@@ -92,11 +96,11 @@ class PoseVQVAE(pl.LightningModule):
         rhand_pred = self.reconstruction(rhand, "hand")
         lhand_pred = self.reconstruction(lhand, "hand")
 
-        pose_rec_loss = (torch.abs(pose - pose_pred) * pose_no_mask).sum() / pose_no_mask.sum()
+        pose_rec_loss = (torch.abs(pose - pose_pred) * pose_no_mask).sum() / (pose_no_mask.sum() + 1e-7)
         # print("pose_rec_loss: ", pose_rec_loss.shape, pose_no_mask.shape)
-        face_rec_loss = (torch.abs(face - face_pred) * face_no_mask).sum() / face_no_mask.sum()
-        rhand_rec_loss = (torch.abs(rhand - rhand_pred) * rhand_no_mask).sum() / rhand_no_mask.sum()
-        lhand_rec_loss = (torch.abs(lhand - lhand_pred) * lhand_no_mask).sum() / lhand_no_mask.sum()
+        face_rec_loss = (torch.abs(face - face_pred) * face_no_mask).sum() / (face_no_mask.sum() + 1e-7)
+        rhand_rec_loss = (torch.abs(rhand - rhand_pred) * rhand_no_mask).sum() / (rhand_no_mask.sum()+ 1e-7)
+        lhand_rec_loss = (torch.abs(lhand - lhand_pred) * lhand_no_mask).sum() / (lhand_no_mask.sum() + 1e-7)
 
         loss = pose_rec_loss + face_rec_loss + rhand_rec_loss + lhand_rec_loss
 
@@ -106,8 +110,78 @@ class PoseVQVAE(pl.LightningModule):
         self.log('{}/lhand_rec_loss'.format(mode), lhand_rec_loss.detach(), prog_bar=True)
         self.log('{}/loss'.format(mode), loss.detach(), prog_bar=True)
 
-        return loss
+        # visualize
+        ori_pose_np = self._tensor2numpy(pose, 640, 360)
 
+        face_anchor = pose[0, :, 0, 0]
+        rhand_anchor = pose[0, :, 0, 7]
+        lhand_anchor = pose[0, :, 0, 4]
+        
+        ori_face_np = self._tensor2numpy(face, 640, 360) #, face_anchor[0] * 640, face_anchor[1] * 360)
+        ori_rhand_np = self._tensor2numpy(rhand, 640, 360)# , rhand_anchor[0] * 640, rhand_anchor[1] * 360)
+        ori_lhand_np = self._tensor2numpy(lhand, 640, 360) # , lhand_anchor[0] * 640, lhand_anchor[1] * 360)
+
+
+        ori_vis = []
+        bs, c, t, v = pose.size()
+
+        for i in range(t):
+            pose = pose.permute(0, 2, 3, 1).contiguous() # [bs, t, v, c]
+
+            post_list = ori_pose_np[i].tolist()
+            face_list = ori_face_np[i].tolist()
+            rhand_list = ori_rhand_np[i].tolist()
+            lhand_list = ori_lhand_np[i].tolist()
+
+            canvas = self._render(post_list, face_list, rhand_list, lhand_list)
+            canvas = torch.FloatTensor(canvas) # [h, w, c]
+            canvas = canvas.permute(2, 0, 1).contiguous().unsqueeze(0)
+            
+            ori_vis.append(canvas) # [1, c, h, w]
+        ori_vis = torch.cat(ori_vis, dim=0)
+        print(ori_vis.shape)
+        ori_vis = torchvision.utils.make_grid(ori_vis, )
+        self.logger.experiment.add_image("ori_vis", ori_vis, self.global_step)
+        return loss
+    
+    def _tensor2numpy(self, points, x_anchor, y_anchor):
+        """points: [V, 2]
+        """
+        v, c = points.size()
+
+        points = torch.clamp(points, -1., 1.)
+        points = torch.cat([points[:, 0:1] * 1280 + x_anchor, points[:, :, 1:2] * 720 + y_anchor, torch.ones((t, v, 1)).to(points.device)], dim=-1)  # [T, V, 2]
+        points = points.view(3*v) # [T, 3V]
+        points = points.detach().cpu().numpy() # [T, 3V]
+        return points
+
+
+    def _render(self, posepts, facepts, r_handpts, l_handpts):
+        myshape = (720, 1280, 3)
+        numkeypoints = 8
+        canvas = renderpose(posepts, 255 * np.ones(myshape, dtype='uint8'))
+        canvas = renderface_sparse(facepts, canvas, numkeypoints, disp=False)
+        canvas = renderhand(r_handpts, canvas)
+        canvas = renderhand(l_handpts, canvas)[:, 280:1000, :] # [720, 720, 3]
+        canvas = cv2.resize(canvas, (256, 256), interpolation=cv2.INTER_CUBIC) # [256, 256, 3]
+
+        # canvas = np.transpose(canvas, (2, 0, 1))
+        # print(canvas.shape, type(canvas))
+        # cv2.imwrite("hah.jpg", np.transpose(canvas, (2, 0, 1)))
+        # print("done!!!")
+        # exit()
+        # canvas = Image.fromarray(canvas[:, :, [2,1,0]])
+
+        # size = (455, 256) # int(256*1280/720)
+
+        
+        # canvas = canvas.resize((int(256*1280/720), 256), Image.ANTIALIAS) # []
+        # print(canvas.size)
+        # canvas = np.asarray(canvas)[(455-256)//2: (455-256)//2+256, :]
+        # canvas = Image.fromarray(canvas)
+        # canvas.save("test2" + '.png')
+        # exit()
+        return canvas # [3, 720, 1280]
 
     def training_step(self, batch, batch_idx):
         loss = self.forward(batch, "train")
@@ -292,8 +366,6 @@ class GCN_TranTCN_18(nn.Module):
         for gcn, importance in zip(self.st_gcn_networks, self.edge_importance):
             x, _ = gcn(x, self.A * importance)
 
-        # _, c, t, v = x.size()
-        # feature = x.view(N, c, t, v)
         return x
 
 
