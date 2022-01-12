@@ -19,12 +19,9 @@ def zero(x):
 def iden(x):
     return x
 
-
-
-class PoseVQVAE(pl.LightningModule):
+class PoseSingleVQVAE(pl.LightningModule):
     def __init__(self, args):
         super().__init__()
-        self.args = args
 
         self.encoder = nn.ModuleDict()
         self.encoder["pose"] = ST_GCN_18(in_channels=2, graph_cfg={'layout':'pose25', 'strategy':'spatial'})
@@ -61,14 +58,13 @@ class PoseVQVAE(pl.LightningModule):
         self.decoder["pose"] = GCN_TranTCN_18(in_channels=256, graph_cfg={'layout':'pose25', 'strategy':'spatial'})
         self.decoder["face"] = GCN_TranTCN_18(in_channels=256, graph_cfg={'layout':'face70', 'strategy':'spatial'})
         self.decoder["hand"] = GCN_TranTCN_18(in_channels=256, graph_cfg={'layout':'hand21', 'strategy':'spatial'})
-        self.save_hyperparameters()
+
 
     def encode(self, points, part_name):
         feat = self.encoder[part_name](points)
         for conv in self.points_downsample:
             feat = conv(feat)
         vq_output = self.codebook(self.pre_vq_conv(feat))
-
         return vq_output['encodings'], vq_output['embeddings']
 
     def decode(self, feat, part_name):
@@ -114,7 +110,7 @@ class PoseVQVAE(pl.LightningModule):
         if mode == "train" and self.global_step % 200 == 0:
             self.visualization(mode, "orig_vis", pose, pose_no_mask, face, face_no_mask, rhand, rhand_no_mask, lhand, lhand_no_mask)
             self.visualization(mode, "pred_vis", pose_pred, pose_no_mask, face_pred, face_no_mask, rhand_pred, rhand_no_mask, lhand_pred, lhand_no_mask)
-        elif mode == "val"and self.global_step % 10 == 0:
+        if mode == "val" and self.global_step % 10 == 0:
             self.visualization(mode, "orig_vis", pose, pose_no_mask, face, face_no_mask, rhand, rhand_no_mask, lhand, lhand_no_mask)
             self.visualization(mode, "pred_vis", pose_pred, pose_no_mask, face_pred, face_no_mask, rhand_pred, rhand_no_mask, lhand_pred, lhand_no_mask)
 
@@ -125,12 +121,17 @@ class PoseVQVAE(pl.LightningModule):
         ori_vis = []
 
         bs, c, t, v = pose.size()
-        pose = pose[0].permute(1, 2, 0).contiguous()  # [t, v, c]
-        face = face[0].permute(1, 2, 0).contiguous()
-        rhand = rhand[0].permute(1, 2, 0).contiguous()
-        lhand = lhand[0].permute(1, 2, 0).contiguous()
+        pose = pose.permute(0, 3, 1, 2).contiguous().squeeze(-1)[:8] # [8, v, c]
+        face = face.permute(0, 3, 1, 2).contiguous().squeeze(-1)[:8] # [8, v, c]
+        rhand = rhand.permute(0, 3, 1, 2).contiguous().squeeze(-1)[:8] # [8, v, c]
+        lhand = lhand.permute(0, 3, 1, 2).contiguous().squeeze(-1)[:8] # [8, v, c]
 
-        for i in range(t):   
+        # pose = pose[0].permute(1, 2, 0).contiguous()  # [t, v, c]
+        # face = face[0].permute(1, 2, 0).contiguous()
+        # rhand = rhand[0].permute(1, 2, 0).contiguous()
+        # lhand = lhand[0].permute(1, 2, 0).contiguous()
+
+        for i in range(pose.size(0)):   
             pose_anchor = (640, 360)
             pose_list = self._tensor2numpy(pose[i], pose_anchor) # [3V]
 
@@ -242,7 +243,7 @@ class ST_GCN_18(nn.Module):
 
         # build networks
         spatial_kernel_size = A.size(0)
-        temporal_kernel_size = 9
+        temporal_kernel_size = 1
         kernel_size = (temporal_kernel_size, spatial_kernel_size)
         self.data_bn = nn.BatchNorm1d(in_channels *
                                       A.size(1)) if data_bn else iden
@@ -252,10 +253,10 @@ class ST_GCN_18(nn.Module):
             st_gcn_block(64, 64, kernel_size, 1, **kwargs),
             st_gcn_block(64, 64, kernel_size, 1, **kwargs),
             st_gcn_block(64, 64, kernel_size, 1, **kwargs),
-            st_gcn_block(64, 128, kernel_size, 2, **kwargs),
+            st_gcn_block(64, 128, kernel_size, 1, **kwargs),
             st_gcn_block(128, 128, kernel_size, 1, **kwargs),
             st_gcn_block(128, 128, kernel_size, 1, **kwargs),
-            st_gcn_block(128, 256, kernel_size, 2, **kwargs),
+            st_gcn_block(128, 256, kernel_size, 1, **kwargs),
             st_gcn_block(256, 256, kernel_size, 1, **kwargs),
             st_gcn_block(256, 256, kernel_size, 1, **kwargs),
         ))
@@ -325,7 +326,7 @@ class GCN_TranTCN_18(nn.Module):
 
         # build networks
         spatial_kernel_size = A.size(0)
-        temporal_kernel_size = 4
+        temporal_kernel_size = 1
         kernel_size = (temporal_kernel_size, spatial_kernel_size)
         self.data_bn = nn.BatchNorm1d(in_channels *
                                       A.size(1)) if data_bn else iden
@@ -335,10 +336,10 @@ class GCN_TranTCN_18(nn.Module):
             gcn_transtcn_block(256, 256, kernel_size, 1, **kwargs),
             gcn_transtcn_block(256, 128, kernel_size, 1, **kwargs),
             gcn_transtcn_block(128, 128, kernel_size, 1, **kwargs),
-            gcn_transtcn_block(128, 128, kernel_size, 2, **kwargs),
+            gcn_transtcn_block(128, 128, kernel_size, 1, **kwargs),
             gcn_transtcn_block(128, 64, kernel_size, 1, **kwargs),
             gcn_transtcn_block(64, 64, kernel_size, 1, **kwargs),
-            gcn_transtcn_block(64, 64, kernel_size, 2, **kwargs),
+            gcn_transtcn_block(64, 64, kernel_size, 1, **kwargs),
             gcn_transtcn_block(64, 64, kernel_size, 1, **kwargs),
             gcn_transtcn_block(64, 2, kernel_size, 1, act_fn=nn.Tanh(), **kwargs),
         ))
@@ -406,20 +407,6 @@ class st_gcn_block(nn.Module):
         self.gcn = ConvTemporalGraphical(in_channels, out_channels,
                                          kernel_size[1])
 
-        self.tcn = nn.Sequential(
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(
-                out_channels,
-                out_channels,
-                (kernel_size[0], 1),
-                (stride, 1),
-                padding,
-            ),
-            nn.BatchNorm2d(out_channels),
-            nn.Dropout(dropout, inplace=True),
-        )
-
         if not residual:
             self.residual = zero
 
@@ -441,7 +428,8 @@ class st_gcn_block(nn.Module):
 
         res = self.residual(x)
         x, A = self.gcn(x, A)
-        x = self.tcn(x) + res
+        # x = self.tcn(x) + res
+        x += res
 
         return self.relu(x), A
 
@@ -481,14 +469,6 @@ class gcn_transtcn_block(nn.Module):
         self.gcn = ConvTemporalGraphical(in_channels, out_channels,
                                          kernel_size[1])
 
-        self.tcn = nn.Sequential(
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-            SamePadConvTranspose2d(out_channels, out_channels, kernel_size, (stride, 1)),
-            nn.BatchNorm2d(out_channels),
-            nn.Dropout(dropout, inplace=True),
-        )
-
         if not residual:
             self.residual = zero
 
@@ -511,7 +491,7 @@ class gcn_transtcn_block(nn.Module):
 
         res = self.residual(x)
         x, A = self.gcn(x, A)
-        x = self.tcn(x) + res
+        x = x + res
 
         return self.act(x), A
 

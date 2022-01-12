@@ -56,7 +56,7 @@ class PoseDataset(data.Dataset):
 
         data = pd.read_csv(csv_path, on_bad_lines='skip', delimiter="\t")
         
-        debug = 0
+        debug = opts.debug
 
         key_json_paths = []
 
@@ -71,7 +71,7 @@ class PoseDataset(data.Dataset):
                 continue
             key_json_paths.append(key_json_path)
 
-        sequence_length = 16
+        sequence_length = opts.sequence_length
         warnings.filterwarnings('ignore')
 
         keypoints_cache_file = osp.join(data_path, tag, f"metadata_lhand_{debug}_{sequence_length}.npy")
@@ -125,24 +125,24 @@ class PoseDataset(data.Dataset):
         no_mask = (probs != 0).astype(np.float32) # [1, T, V]
 
         # print(probs[:, :2, :], no_mask[:, :2, :])
-        # no_mask_anchor = no_mask[:, :, anchor_ids] # [1, T, 1]
+        no_mask_anchor = no_mask[:, :, anchor_ids] # [1, T, 1]
 
-        # x_anchor = x_points[:, :, anchor_ids] # [1, T, 1]
-        # y_anchor = y_points[:, :, anchor_ids] # [1, T, 1]
+        x_anchor = x_points[:, :, anchor_ids] # [1, T, 1]
+        y_anchor = y_points[:, :, anchor_ids] # [1, T, 1]
 
         # # print(x_points[:, :2, :], y_points[:, :2, :])
 
-        # if (x_anchor == 0).any() or (y_anchor == 0).any():
-        #     # print(x_anchor, y_anchor)
-        #     x_anchor = np.mean(x_anchor) * (1 - no_mask_anchor) + x_anchor
-        #     y_anchor = np.mean(y_anchor) * (1 - no_mask_anchor) + y_anchor
+        if (x_anchor == 0).any() or (y_anchor == 0).any():
+            # print(x_anchor, y_anchor)
+            x_anchor = np.mean(x_anchor) * (1 - no_mask_anchor) + x_anchor
+            y_anchor = np.mean(y_anchor) * (1 - no_mask_anchor) + y_anchor
 
 
-        # x_points = ((x_points - x_anchor) / 1280.) * no_mask
-        # y_points = ((y_points - y_anchor) / 720.) * no_mask
+        x_points = ((x_points - x_anchor) / 1280.) * no_mask # [-1, 1]
+        y_points = ((y_points - y_anchor) / 720.) * no_mask
 
-        x_points = ((x_points) / 640. - 1.) * no_mask
-        y_points = ((y_points) / 360. - 1.) * no_mask
+        # x_points = ((x_points) / 640. - 1.) * no_mask
+        # y_points = ((y_points) / 360. - 1.) * no_mask
 
         points = np.concatenate([x_points, y_points], axis=0) # [2, T, V]
         return torch.FloatTensor(points), no_mask
@@ -220,14 +220,14 @@ if __name__ == "__main__":
         num_workers=32
     opts= Option()
 
-    # dataloader = How2SignImagePairData(opts).train_dataloader()
-    dataloader = PoseDataset(opts)
+    dataloader = How2SignPoseData(opts).train_dataloader()
+    # dataloader = PoseDataset(opts)
 
     for i, data in enumerate(dataloader):
         if i > 20: break
         print("")
-        # print("pose: ", data["pose"].shape)
-        # print("face: ", data["face"].shape)
-        # print("rhand: ", data["rhand"].shape)
-        # print("lhand: ", data["lhand"].shape)
+        print("pose: ", data["pose"].shape)
+        print("face: ", data["face"].shape)
+        print("rhand: ", data["rhand"].shape)
+        print("lhand: ", data["lhand"].shape)
     # exit()

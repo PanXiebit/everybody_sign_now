@@ -21,6 +21,8 @@ class BaseOptions():
 
         # input/output sizes       
         self.parser.add_argument('--batchSize', type=int, default=1, help='input batch size')
+        self.parser.add_argument('--debug', type=int, default=0, help='debug')
+        self.parser.add_argument('--sequence_length', type=int, default=16, help='sequence_length')
         self.parser.add_argument('--loadSize', type=int, default=1024, help='scale images to this size')
         self.parser.add_argument('--fineSize', type=int, default=512, help='then crop to this size')
         self.parser.add_argument('--label_nc', type=int, default=35, help='# of input image channels')
