@@ -11,9 +11,10 @@ import torch.distributed as dist
 from modules.transformer.attention import MultiHeadAttention
 from modules.utils import shift_dim
 import torchvision
+from modules.perceptual_disnet.lpips import LPIPS
 
 
-class VQVAE(pl.LightningModule):
+class VQCVAE(pl.LightningModule):
     def __init__(self, args):
         super().__init__()
         self.args = args
@@ -27,6 +28,8 @@ class VQVAE(pl.LightningModule):
         self.post_vq_conv = SamePadConv3d(args.embedding_dim, args.n_hiddens, 1)
 
         self.codebook = Codebook(args.n_codes, args.embedding_dim)
+        self.perceptual_loss = LPIPS().eval()
+
         self.save_hyperparameters()
 
     @property
@@ -55,39 +58,105 @@ class VQVAE(pl.LightningModule):
         h = self.post_vq_conv(shift_dim(h, -1, 1))
         return self.decoder(h)
 
-    def forward(self, x):
+    def forward(self, x, target, mode):
         z = self.pre_vq_conv(self.encoder(x))
         vq_output = self.codebook(z)
         x_recon = self.decoder(self.post_vq_conv(vq_output['embeddings']))
-        recon_loss = F.mse_loss(x_recon, x) / 0.06
+        
+        commitment_loss = vq_output['commitment_loss']
 
-        return recon_loss, x_recon, vq_output
+        # reconstruction loss
+        target = target.permute(0, 2, 1, 3, 4).contiguous().flatten(0,1) # [bs*t, c, h, w]
+        reconstructions = x_recon.permute(0, 2, 1, 3, 4).contiguous().flatten(0,1)
+        recon_loss = torch.abs(target.contiguous() - reconstructions.contiguous()) # [bs*t, c, h, w]
+        
+        # perceptual loss
+        p_loss = self.perceptual_loss(target, reconstructions)
+        
+        # total loss
+        loss = recon_loss.mean() + p_loss.mean() + commitment_loss.mean()
+
+        self.log('{}/recon_loss'.format(mode), recon_loss.detach().mean(), prog_bar=True)
+        self.log('{}/p_loss'.format(mode), p_loss.detach().mean(), prog_bar=True)
+        self.log('{}/perplexity'.format(mode), vq_output['perplexity'].detach().mean(), prog_bar=True)
+        self.log('{}/commitment_loss'.format(mode), vq_output['commitment_loss'].detach().mean(), prog_bar=True)
+        self.log('{}/loss'.format(mode), loss.detach(), prog_bar=True)
+
+        return x_recon, loss
 
     def training_step(self, batch, batch_idx):
-        x = batch['video']
-        recon_loss, _, vq_output = self.forward(x)
-        commitment_loss = vq_output['commitment_loss']
-        loss = recon_loss + commitment_loss
+        input_label = batch['label']
+        style_image = batch['style_img']
+        real_image = batch['rgb']
+        
+        bs, c, t, h, w = input_label.size()
+
+        style_image = style_image.unsqueeze(2).repeat(1,1,t,1,1)
+        x = torch.cat([style_image, input_label], dim=1)
+
+        x_recon, loss = self.forward(x, real_image, "train")
+        
+
+        if batch_idx % 1000 == 0:
+            vis_orig = (torch.clamp(real_image, -1., 1.) + 1.0) / 2 # [bs, 3, T, 128, 128]
+            vis_orig = vis_orig.permute(0, 2, 1, 3, 4).contiguous()[0]
+            vis_orig = torchvision.utils.make_grid(vis_orig)
+
+            vis_pred = (torch.clamp(x_recon, -1., 1.) + 1.0) / 2 # [bs, 3, T, 128, 128]
+            vis_pred = vis_pred.permute(0, 2, 1, 3, 4).contiguous()[0]
+            vis_pred = torchvision.utils.make_grid(vis_pred)
+
+            vis_label = (torch.clamp(input_label, -1., 1.) + 1.0) / 2 # [bs, 3, T, 128, 128]
+            vis_label = vis_label.permute(0, 2, 1, 3, 4).contiguous()[0] # [bs, T, 3, 128, 128]
+            vis_label = torchvision.utils.make_grid(vis_label)
+
+            vis_st_img = (torch.clamp(style_image, -1., 1.) + 1.0) / 2 # [bs, 3, t, h ,w]
+            vis_st_img = vis_st_img.permute(0, 2, 1, 3, 4).contiguous()[0] # [bs, T, 3, 128, 128]
+            vis_st_img = torchvision.utils.make_grid(vis_st_img)
+            
+            self.logger.experiment.add_image("train/vis_orig", vis_orig, self.global_step)
+            self.logger.experiment.add_image("train/vis_pred", vis_pred, self.global_step)
+            self.logger.experiment.add_image("train/vis_label", vis_label, self.global_step)
+            self.logger.experiment.add_image("train/vis_st_img", vis_st_img, self.global_step)
+
         return loss
 
     def validation_step(self, batch, batch_idx):
-        x = batch['video']
-        recon_loss, x_recon, vq_output = self.forward(x)
+        if batch_idx > 10: return
+        input_label = batch['label']
+        style_image = batch['style_img'] # [bs, c, h, w]
+        real_image = batch['rgb']
 
-        dec_out = torch.clamp(x_recon, -0.5, 0.5) + 0.5 # [bs, 3, T, 128, 128]
-        vis = dec_out.permute(0, 2, 1, 3, 4).contiguous()[0]
-        grid = torchvision.utils.make_grid(vis)
 
-        origin = torch.clamp(x, -0.5, 0.5) + 0.5 # [bs, 3, T, 128, 128]
-        vis_x = origin.permute(0, 2, 1, 3, 4).contiguous()[0]
-        grid_x = torchvision.utils.make_grid(vis_x)
+        bs, c, t, h, w = input_label.size()
+
+        style_image = style_image.unsqueeze(2).repeat(1,1,t,1,1)
+        x = torch.cat([style_image, input_label], dim=1)
         
-        self.logger.experiment.add_image("generated_images", grid, self.current_epoch)
-        self.logger.experiment.add_image("original_images", grid_x, self.current_epoch)
+        x_recon, loss = self.forward(x, real_image, "val")
 
-        self.log('val/recon_loss', recon_loss, prog_bar=True)
-        self.log('val/perplexity', vq_output['perplexity'], prog_bar=True)
-        self.log('val/commitment_loss', vq_output['commitment_loss'], prog_bar=True)
+        
+        vis_orig = (torch.clamp(real_image, -1., 1.) + 1.0) / 2 # [bs, 3, T, 128, 128]
+        vis_orig = vis_orig.permute(0, 2, 1, 3, 4).contiguous()[0]
+        vis_orig = torchvision.utils.make_grid(vis_orig)
+
+        vis_pred = (torch.clamp(x_recon, -1., 1.) + 1.0) / 2 # [bs, 3, T, 128, 128]
+        vis_pred = vis_pred.permute(0, 2, 1, 3, 4).contiguous()[0]
+        vis_pred = torchvision.utils.make_grid(vis_pred)
+
+        vis_label = (torch.clamp(input_label, -1., 1.) + 1.0) / 2 # [bs, 3, T, 128, 128]
+        vis_label = vis_label.permute(0, 2, 1, 3, 4).contiguous()[0] # [bs, T, 3, 128, 128]
+        vis_label = torchvision.utils.make_grid(vis_label)
+
+        vis_st_img = (torch.clamp(style_image, -1., 1.) + 1.0) / 2 # [bs, 3, t, h ,w]
+        vis_st_img = vis_st_img.permute(0, 2, 1, 3, 4).contiguous()[0] # [bs, T, 3, 128, 128]
+        vis_st_img = torchvision.utils.make_grid(vis_st_img)
+        
+        self.logger.experiment.add_image("val/vis_orig", vis_orig, self.current_epoch)
+        self.logger.experiment.add_image("val/vis_pred", vis_pred, self.current_epoch)
+        self.logger.experiment.add_image("val/vis_label", vis_label, self.current_epoch)
+        self.logger.experiment.add_image("val/vis_st_img", vis_st_img, self.current_epoch)
+
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=3e-4, betas=(0.9, 0.999))
@@ -96,7 +165,7 @@ class VQVAE(pl.LightningModule):
     def add_model_specific_args(parent_parser):
         parser = argparse.ArgumentParser(parents=[parent_parser], add_help=False)
         parser.add_argument('--embedding_dim', type=int, default=256)
-        parser.add_argument('--n_codes', type=int, default=2048)
+        parser.add_argument('--n_codes', type=int, default=1024)
         parser.add_argument('--n_hiddens', type=int, default=240)
         parser.add_argument('--n_res_layers', type=int, default=4)
         parser.add_argument('--downsample', nargs='+', type=int, default=(4, 4, 4))
@@ -236,7 +305,7 @@ class Encoder(nn.Module):
         self.convs = nn.ModuleList()
         max_ds = n_times_downsample.max()
         for i in range(max_ds):
-            in_channels = 3 if i == 0 else n_hiddens
+            in_channels = 6 if i == 0 else n_hiddens   # TODO, input_channel = 6
             stride = tuple([2 if d > 0 else 1 for d in n_times_downsample])
             conv = SamePadConv3d(in_channels, n_hiddens, 4, stride=stride)
             self.convs.append(conv)
@@ -279,6 +348,7 @@ class Decoder(nn.Module):
                                            stride=us)
             self.convts.append(convt)
             n_times_upsample -= 1
+        
 
     def forward(self, x):
         h = self.res_stack(x)
@@ -286,7 +356,7 @@ class Decoder(nn.Module):
             h = convt(h)
             if i < len(self.convts) - 1:
                 h = F.relu(h)
-        return h
+        return F.tanh(h)
 
 
 # Does not support dilation

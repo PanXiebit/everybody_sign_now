@@ -124,7 +124,7 @@ class ImagePairDataset(data.Dataset):
 
         label_0, label_1 = self.normalize(label[0]), self.normalize(label[1])
 
-        rgb, _, _, rgb_idx, rgb_path_0 = self.rgb_vid_clips.get_clip(idx)
+        rgb, _, _, rgb_idx, rgb_path_0 = self.rgb_vid_clips.get_clip(label_idx)
         rgb_0, rgb_1 = self.normalize(rgb[0]), self.normalize(rgb[1])
 
         rhands_0 = list(map(float, self.kyp_rhands[idx].strip().split()))
