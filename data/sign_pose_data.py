@@ -79,7 +79,10 @@ class PoseDataset(data.Dataset):
         if not os.path.exists(keypoints_cache_file):
             clips = []
             for keypoint_path in tqdm(key_json_paths):
-                keypoint_files = sorted(os.listdir(keypoint_path))[::2]
+                if sequence_length > 8:
+                    keypoint_files = sorted(os.listdir(keypoint_path))[::2]
+                else:
+                    keypoint_files = sorted(os.listdir(keypoint_path))[::8]
                 clip_data = []
                 for keypoint_file in keypoint_files:
                     posepts, facepts, r_handpts, l_handpts = self.readkeypointsfile_json(os.path.join(keypoint_path, keypoint_file))
@@ -102,7 +105,7 @@ class PoseDataset(data.Dataset):
         keypoints = self._clips[idx]
 
         pose_anchor = [1]
-        pose, pose_no_mask = self._get_x_y_and_normalize(keypoints[:, :75], pose_anchor)
+        pose, pose_no_mask = self._get_x_y_and_normalize(keypoints[:, :75], pose_anchor) # [bs, c, t, v]
         
         face_anchor = [33]
         face, face_no_mask = self._get_x_y_and_normalize(keypoints[:, 75:75+210], face_anchor)
@@ -110,6 +113,7 @@ class PoseDataset(data.Dataset):
         hand_anchor = [0]
         rhand, rhand_no_mask = self._get_x_y_and_normalize(keypoints[:, 75+210:75+210+63], hand_anchor)
         lhand, lhand_no_mask = self._get_x_y_and_normalize(keypoints[:, 75+210+63:75+210+63+63], hand_anchor)
+        
         return dict(pose=pose, pose_no_mask=pose_no_mask,
                     face=face, face_no_mask=face_no_mask,
                     rhand=rhand, rhand_no_mask=rhand_no_mask, 

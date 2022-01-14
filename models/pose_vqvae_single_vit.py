@@ -1,4 +1,5 @@
 import torch
+from torch._C import dtype
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
@@ -11,6 +12,7 @@ import numpy as np
 from data.data_prep.renderopenpose import *
 import torchvision
 import cv2
+from modules.attention import Transformer
 
 
 def zero(x):
@@ -28,70 +30,106 @@ class PoseSingleVQVAE(pl.LightningModule):
         self.encoder["face"] = ST_GCN_18(in_channels=2, graph_cfg={'layout':'face70', 'strategy':'spatial'})
         self.encoder["hand"] = ST_GCN_18(in_channels=2, graph_cfg={'layout':'hand21', 'strategy':'spatial'})
 
+        self.tokens = {}
+        self.tokens["pose"] = [[17, 15, 0, 16, 18], [0, 1, 8, 9, 12], [4, 3, 2, 1, 5], [2, 1, 5, 6, 7]]
+        self.tokens["rhand"] = [[0,1,2,3,4], [0,5,6,7,8], [0,9,10,11,12], [0,13,14,15,16], [0,17,18,19,20]]
+        self.tokens["lhand"] = [[0,1,2,3,4], [0,5,6,7,8], [0,9,10,11,12], [0,13,14,15,16], [0,17,18,19,20]]
+        self.tokens["face"] = [[0,2,4,6,8], [8,10,12,14,16], [17,18,19,20,21], [22,23,24,25,26], [27,28,29,30,33]]
+
+        # downsample
         self.points_downsample = nn.ModuleList()
         n_times_downsample = 2
         for i in range(n_times_downsample):
             conv = SamePadConv2d(256, 256, 4, stride=(1,2))
             self.points_downsample.append(conv)
         
+        # transformer
+        self.transformer = Transformer(256, 3, 4, 64, 1024, 0.1)
+
         self.pre_vq_conv = SamePadConv2d(256, 256, 1)
         self.post_vq_conv = SamePadConv2d(256, 256, 1)
         self.codebook = Codebook(args.n_codes, args.embedding_dim)
 
-        self.face_upsample = nn.ModuleList()
-        n_times_downsample = 2
-        for i in range(n_times_downsample):
-            if i != n_times_downsample-1: kernel =5
-            else: kernel=4
-            conv = SamePadConvTranspose2d(256, 256, kernel, stride=(1,2))
-            self.face_upsample.append(conv)
-
-        self.pose_upsample = nn.ModuleList()
-        n_times_downsample = 2
-        for i in range(n_times_downsample):
-            if i != n_times_downsample-1: kernel = 4
-            else: kernel=5
-            conv = SamePadConvTranspose2d(256, 256, kernel, stride=(1,2))
-            self.pose_upsample.append(conv)
-
-        self.decoder = nn.ModuleDict()
-        self.decoder["pose"] = GCN_TranTCN_18(in_channels=256, graph_cfg={'layout':'pose25', 'strategy':'spatial'})
-        self.decoder["face"] = GCN_TranTCN_18(in_channels=256, graph_cfg={'layout':'face70', 'strategy':'spatial'})
-        self.decoder["hand"] = GCN_TranTCN_18(in_channels=256, graph_cfg={'layout':'hand21', 'strategy':'spatial'})
+        self.upconv1 = nn.ConvTranspose1d(256, 256, kernel_size=5, stride=1)
+        self.upconv2 = SamePadConvTranspose1d(256, 128, kernel_size=4, stride=2)
+        self.upconv3 = SamePadConvTranspose1d(128, 64, kernel_size=4, stride=2)
+        self.upconv4 = nn.ConvTranspose1d(64, 2, kernel_size=4, stride=1)        
 
 
-    def encode(self, points, part_name):
-        feat = self.encoder[part_name](points)
-        for conv in self.points_downsample:
-            feat = conv(feat)
+    def heuristic_downsample(self, points_feat, token_ids):
+        """points_feat: [bs, c, t, v]
+        """
+        out_feat = []
+        for ids in token_ids:
+            part_feat = points_feat[:, :, :, ids] # [bs, c, t, 5]
+            for conv in self.points_downsample:
+                part_feat = conv(part_feat)
+            out_feat.append(part_feat)
+        out_feat = torch.cat(out_feat, dim=-1) 
+        return out_feat
+
+
+    def encode(self, batch):
+        pose_feat = self.encoder["pose"](batch["pose"])
+        pose_feat = self.heuristic_downsample(pose_feat, self.tokens["pose"])
+
+        face_feat = self.encoder["face"](batch["face"])
+        face_feat = self.heuristic_downsample(face_feat, self.tokens["face"])
+
+        rhand_feat = self.encoder["hand"](batch["rhand"])
+        rhand_feat = self.heuristic_downsample(rhand_feat, self.tokens["rhand"])
+
+        lhand_feat = self.encoder["hand"](batch["lhand"])
+        lhand_feat = self.heuristic_downsample(lhand_feat, self.tokens["lhand"])
+
+        feat = torch.cat([pose_feat, face_feat, rhand_feat, lhand_feat], dim=-1).squeeze(-2) # [bs, hidden, 19]
+
+        feat = feat.permute(0, 2, 1).contiguous()
+
+        feat = self.transformer(feat).permute(0, 2, 1).contiguous().unsqueeze(2) # [bs, hidden, 19]
         vq_output = self.codebook(self.pre_vq_conv(feat))
         return vq_output['encodings'], vq_output['embeddings']
 
-    def decode(self, feat, part_name):
-        feat = self.post_vq_conv(feat)
-        if part_name == "face":
-            for tcn in self.face_upsample:
-                feat = tcn(feat)
-        else:
-            for tcn in self.pose_upsample:
-                feat = tcn(feat)
-        out = self.decoder[part_name](feat)
-        return out
+    def decode(self, feat):
+        feat = self.post_vq_conv(feat).squeeze(2)
+        feat = self.upconv1(feat)
+        feat = self.upconv2(feat)
+        feat = self.upconv3(feat)
+        feat = self.upconv4(feat)
+        return feat
 
-    def reconstruction(self, points, part_name):
-        recon = self.decode(self.encode(points, part_name)[1], part_name)
-        return recon
+    def selects(self, x, part_name):
+        origin = []
+        for ids in self.tokens[part_name]:
+            cur = x[:, :, :, ids] # [bs, c, t, 5]
+            origin.append(cur)
+        return torch.cat(origin, dim=-1)
 
 
     def forward(self, batch, mode):
-        pose, face, rhand, lhand = batch["pose"], batch["face"], batch["rhand"], batch["lhand"] # [bs, c, t, v]
+        
+        _, features = self.encode(batch)
+        predictions = self.decode(features).unsqueeze(2)
+        pose_pred = predictions[:, :, :, :20]
+        face_pred = predictions[:, :, :, 20:45]
+        rhand_pred = predictions[:, :, :, 45:70]
+        lhand_pred = predictions[:, :, :, 70:95]
 
-        pose_no_mask, face_no_mask, rhand_no_mask, lhand_no_mask = batch["pose_no_mask"], batch["face_no_mask"], batch["rhand_no_mask"], batch["lhand_no_mask"]
+        # print("predictions: ", predictions.shape, pose_pred.shape, face_pred.shape, rhand_pred.shape, lhand_pred.shape)
 
-        pose_pred = self.reconstruction(pose, "pose")
-        face_pred = self.reconstruction(face, "face")
-        rhand_pred = self.reconstruction(rhand, "hand")
-        lhand_pred = self.reconstruction(lhand, "hand")
+        pose = self.selects(batch["pose"], "pose")
+        face = self.selects(batch["face"], "face")
+        rhand = self.selects(batch["rhand"], "rhand")
+        lhand = self.selects(batch["lhand"], "lhand")
+        
+        pose_no_mask = self.selects(batch["pose_no_mask"], "pose")
+        face_no_mask = self.selects(batch["face_no_mask"], "face")
+        rhand_no_mask = self.selects(batch["rhand_no_mask"], "rhand")
+        lhand_no_mask = self.selects(batch["lhand_no_mask"], "lhand")
+
+        # print("pose: ", pose.shape, face.shape, rhand.shape, lhand.shape)
+        # print("pose_no_mask: ", pose_no_mask.shape, face_no_mask.shape, rhand_no_mask.shape, lhand_no_mask.shape)
+        # print("abs: ", torch.abs(pose - pose_pred).shape)
 
         pose_rec_loss = (torch.abs(pose - pose_pred) * pose_no_mask).sum() / (pose_no_mask.sum() + 1e-7)
         # print("pose_rec_loss: ", pose_rec_loss.shape, pose_no_mask.shape)
@@ -108,40 +146,36 @@ class PoseSingleVQVAE(pl.LightningModule):
         self.log('{}/loss'.format(mode), loss.detach(), prog_bar=True)
 
         if mode == "train" and self.global_step % 200 == 0:
-            self.visualization(mode, "orig_vis", pose, pose_no_mask, face, face_no_mask, rhand, rhand_no_mask, lhand, lhand_no_mask)
-            self.visualization(mode, "pred_vis", pose_pred, pose_no_mask, face_pred, face_no_mask, rhand_pred, rhand_no_mask, lhand_pred, lhand_no_mask)
+            self.visualization(mode, "orig_vis", pose, face, rhand, lhand)
+            self.visualization(mode, "pred_vis", pose_pred, face_pred, rhand_pred, lhand_pred)
         if mode == "val" and self.global_step % 10 == 0:
-            self.visualization(mode, "orig_vis", pose, pose_no_mask, face, face_no_mask, rhand, rhand_no_mask, lhand, lhand_no_mask)
-            self.visualization(mode, "pred_vis", pose_pred, pose_no_mask, face_pred, face_no_mask, rhand_pred, rhand_no_mask, lhand_pred, lhand_no_mask)
+            self.visualization(mode, "orig_vis", pose, face, rhand, lhand)
+            self.visualization(mode, "pred_vis", pose_pred, face_pred, rhand_pred, lhand_pred)
 
         return loss
 
-    def visualization(self, mode, name, pose, pose_no_mask, face, face_no_mask, rhand, rhand_no_mask, lhand, lhand_no_mask):
+
+    def visualization(self, mode, name, pose, face, rhand, lhand):
         # visualize
         ori_vis = []
 
         bs, c, t, v = pose.size()
-        pose = pose.permute(0, 3, 1, 2).contiguous().squeeze(-1)[:8] # [8, v, c]
+        pose = pose.permute(0, 3, 1, 2).contiguous().squeeze(-1)[:8] # [bs, c, t, v]-> [bs, v, c, t] -> [8, v, c]
         face = face.permute(0, 3, 1, 2).contiguous().squeeze(-1)[:8] # [8, v, c]
         rhand = rhand.permute(0, 3, 1, 2).contiguous().squeeze(-1)[:8] # [8, v, c]
         lhand = lhand.permute(0, 3, 1, 2).contiguous().squeeze(-1)[:8] # [8, v, c]
 
-        # pose = pose[0].permute(1, 2, 0).contiguous()  # [t, v, c]
-        # face = face[0].permute(1, 2, 0).contiguous()
-        # rhand = rhand[0].permute(1, 2, 0).contiguous()
-        # lhand = lhand[0].permute(1, 2, 0).contiguous()
-
         for i in range(pose.size(0)):   
             pose_anchor = (640, 360)
-            pose_list = self._tensor2numpy(pose[i], pose_anchor) # [3V]
+            pose_list = self._tensor2numpy(pose[i], pose_anchor, "pose", 25) # [3V]
 
             face_anchor = (pose_list[0*3], pose_list[0*3 + 1])
             rhand_anchor = (pose_list[4*3], pose_list[4*3 + 1])
             lhand_anchor = (pose_list[7*3], pose_list[7*3 + 1])
 
-            face_list = self._tensor2numpy(face[i], face_anchor) #, face_anchor[0] * 640, face_anchor[1] * 360)
-            rhand_list = self._tensor2numpy(rhand[i], rhand_anchor)# , rhand_anchor[0] * 640, rhand_anchor[1] * 360)
-            lhand_list = self._tensor2numpy(lhand[i], lhand_anchor) # , lhand_anchor[0] * 640, lhand_anchor[1] * 360)
+            face_list = self._tensor2numpy(face[i], face_anchor, "face", 70) #, face_anchor[0] * 640, face_anchor[1] * 360)
+            rhand_list = self._tensor2numpy(rhand[i], rhand_anchor, "rhand", 21)# , rhand_anchor[0] * 640, rhand_anchor[1] * 360)
+            lhand_list = self._tensor2numpy(lhand[i], lhand_anchor, "lhand", 21) # , lhand_anchor[0] * 640, lhand_anchor[1] * 360)
 
             canvas = self._render(pose_list, face_list, rhand_list, lhand_list)
             canvas = torch.FloatTensor(canvas) # [h, w, c]
@@ -153,21 +187,25 @@ class PoseSingleVQVAE(pl.LightningModule):
         self.logger.experiment.add_image("{}/{}".format(mode, name), ori_vis, self.global_step)
 
     
-    def _tensor2numpy(self, points, anchor):
+    def _tensor2numpy(self, points, anchor, part_name, keypoint_num):
         """[v, c]]
         """
-        # print(points.shape, no_mask.shape)
-        # points = points[0] 
-        # points = (points + 1.) * no_mask[0]
+        points = points.detach().cpu().numpy()
+        v, c = points.shape
+        # [[17, 15, 0, 16, 18], [0, 1, 8, 9, 12], [4, 3, 2, 1, 5], [2, 1, 5, 6, 7]]
+        pose_tokens = []
+        for ids in self.tokens[part_name]:
+            pose_tokens.extend(ids)
 
-        # c, t, v = points.size()
-        v, c = points.size()
-        # points = points.permute(1, 2, 0).contiguous() # [t, v, c]
-        # points = torch.clamp(points, -1., 1.) + 1.8 360
-        points = torch.cat([points[:, 0:1] * 1280 + anchor[0], points[:, 1:2] * 720 + anchor[1] , torch.ones((v, 1)).to(points.device)], dim=-1)  # [T, V, 2]
-        points = points.view(3*v) # [3V]
-        points = points.detach().cpu().numpy() # [3V]
-        return points.tolist()
+        pose_vis = np.zeros((keypoint_num, 3), dtype=np.float32)
+        for i in range(len(pose_tokens)):
+            pose_vis[pose_tokens[i], 0] = points[i][0] * 1280 + anchor[0]
+            pose_vis[pose_tokens[i], 1] = points[i][1] * 720 + anchor[1]
+            pose_vis[pose_tokens[i], -1] = 1.
+        
+        pose_vis = pose_vis.reshape((-1, ))
+        # print(pose_vis.shape, pose_vis)
+        return pose_vis.tolist()
 
 
     def _render(self, posepts, facepts, r_handpts, l_handpts):
@@ -181,8 +219,7 @@ class PoseSingleVQVAE(pl.LightningModule):
         canvas = cv2.resize(canvas, (256, 256), interpolation=cv2.INTER_CUBIC) # [256, 256, 3]
 
         # img = Image.fromarray(canvas[:, :, [2,1,0]])
-        # img.save("test2" + '.png')
-        # exit()
+
         return canvas # [256, 256, 3]
 
     def training_step(self, batch, batch_idx):
@@ -195,7 +232,10 @@ class PoseSingleVQVAE(pl.LightningModule):
 
 
     def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=3e-4, betas=(0.9, 0.999))
+        optimizer = torch.optim.Adam(self.parameters(), lr=3e-4, betas=(0.9, 0.999))
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1, gamma=0.5, last_epoch=-1)
+        return [optimizer], [scheduler]
+
 
     @staticmethod
     def add_model_specific_args(parent_parser):
@@ -646,12 +686,36 @@ class SamePadConvTranspose2d(nn.Module):
             pad_input.append((p // 2 + p % 2, p // 2))
         pad_input = sum(pad_input, tuple())
         self.pad_input = pad_input
+
         self.convt = nn.ConvTranspose2d(in_channels, out_channels, kernel_size,
                                         stride=stride, bias=bias,
                                         padding=tuple([k - 1 for k in kernel_size]))
 
     def forward(self, x):
-        return self.convt(F.pad(x, self.pad_input))
+        x = F.pad(x, self.pad_input)
+        return self.convt(x)
+
+class SamePadConvTranspose1d(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, bias=True):
+        super().__init__()
+        if isinstance(kernel_size, int):
+            kernel_size = (kernel_size,) * 1
+        if isinstance(stride, int):
+            stride = (stride,) * 1
+
+        total_pad = tuple([k - s for k, s in zip(kernel_size, stride)])
+        pad_input = []
+        for p in total_pad[::-1]: # reverse since F.pad starts from last dim
+            pad_input.append((p // 2 + p % 2, p // 2))
+        pad_input = sum(pad_input, tuple())
+        self.pad_input = pad_input
+        self.convt = nn.ConvTranspose1d(in_channels, out_channels, kernel_size,
+                                        stride=stride, bias=bias,
+                                        padding=tuple([k - 1 for k in kernel_size]))
+
+    def forward(self, x):
+        x = F.pad(x, self.pad_input)
+        return self.convt(x)
 
 
 
@@ -666,31 +730,40 @@ if __name__ == "__main__":
 
     # out = model.extract_feature(x)
     # print(out.shape)
-    x = torch.randn(2, 64, 4, 25)
+    x = torch.randn(2, 64, 19)
 
-    m1 = SamePadConv2d(64, 64, 4, (1,2))
+    # m1 = SamePadConv2d(64, 64, 4, (1,2))
+    # x = m1(x)
+    # print("x: ", x.shape)
+    m0 = nn.ConvTranspose1d(64, 64, kernel_size=5, stride=1)
+    m1 = SamePadConvTranspose1d(64, 64, kernel_size=4, stride=2)
+    m2 = SamePadConvTranspose1d(64, 64, kernel_size=4, stride=2)
+    m3 = nn.ConvTranspose1d(64, 64, kernel_size=4, stride=1) # (input - 1) * stride + output_padding - 2*padding + kernel
+    x = m0(x)
+    print("out: ", x.shape)
     x = m1(x)
-    print("x: ", x.shape)
-
-    m2 = SamePadConvTranspose2d(64, 64, 5, (1,2))
+    print("out: ", x.shape)
     x = m2(x)
+    print("out: ", x.shape)
+    x = m3(x)
+    print("out: ", x.shape)
 
-    print("x: ", x.shape)
+    # print("x: ", x.shape)
 
-    graph = Graph(layout= "pose25", strategy="spatial")
-    A = torch.tensor(graph.A,
-                    dtype=torch.float32,
-                    requires_grad=False)
+    # graph = Graph(layout= "pose25", strategy="spatial")
+    # A = torch.tensor(graph.A,
+    #                 dtype=torch.float32,
+    #                 requires_grad=False)
 
-    # build networks
-    spatial_kernel_size = A.size(0)
-    print(spatial_kernel_size, A.size())
-    kernel_size = (9, spatial_kernel_size)
-    st_gcn = st_gcn_block(64, 64, kernel_size, 2)
+    # # build networks
+    # spatial_kernel_size = A.size(0)
+    # print(spatial_kernel_size, A.size())
+    # kernel_size = (9, spatial_kernel_size)
+    # st_gcn = st_gcn_block(64, 64, kernel_size, 2)
 
-    x, A = st_gcn(x, A)
-    print("stgcn: ", x.shape)
+    # x, A = st_gcn(x, A)
+    # print("stgcn: ", x.shape)
 
-    gcn_transtcn = gcn_transtcn_block(64, 64, (4, 3), 2)
-    x, A = gcn_transtcn(x, A)
-    print("trans tcn: ", x.shape)
+    # gcn_transtcn = gcn_transtcn_block(64, 64, (4, 3), 2)
+    # x, A = gcn_transtcn(x, A)
+    # print("trans tcn: ", x.shape)
