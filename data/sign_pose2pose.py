@@ -79,7 +79,7 @@ class PoseDataset(data.Dataset):
         if not os.path.exists(keypoints_cache_file):
             clips = []
             for keypoint_path in tqdm(key_json_paths):
-                if sequence_length > 8:
+                if sequence_length >= 4:
                     keypoint_files = sorted(os.listdir(keypoint_path))[::2]
                 else:
                     keypoint_files = sorted(os.listdir(keypoint_path))[::8]
@@ -220,8 +220,10 @@ if __name__ == "__main__":
         resolution = 256
         csv_path=csv_path
         data_path=data_path
-        batchSize=1
+        batchSize=32
         num_workers=32
+        sequence_length=8
+        debug = 100
     opts= Option()
 
     dataloader = How2SignPoseData(opts).train_dataloader()

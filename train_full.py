@@ -5,7 +5,7 @@ import argparse
 
 from models.pix2pixHD_model import Pix2PixHDModel
 from pytorch_lightning.callbacks import ModelCheckpoint
-from data.sign_data_pair import How2SignImagePairData
+from data.sign_pose2rgb import How2SignImagePairData
 from util.util import CheckpointEveryNSteps
 
 
