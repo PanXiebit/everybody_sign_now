@@ -53,7 +53,10 @@ class PoseSingleVQVAE(pl.LightningModule):
         self.upconv1 = nn.ConvTranspose1d(256, 256, kernel_size=5, stride=1)
         self.upconv2 = SamePadConvTranspose1d(256, 128, kernel_size=4, stride=2)
         self.upconv3 = SamePadConvTranspose1d(128, 64, kernel_size=4, stride=2)
-        self.upconv4 = nn.ConvTranspose1d(64, 2, kernel_size=4, stride=1)        
+        self.upconv4 = nn.ConvTranspose1d(64, 2, kernel_size=4, stride=1)
+        
+        self.pose_weight_discount = 0.2
+        self.save_hyperparameters()        
 
 
     def heuristic_downsample(self, points_feat, token_ids):
@@ -106,6 +109,9 @@ class PoseSingleVQVAE(pl.LightningModule):
         return torch.cat(origin, dim=-1)
 
 
+    def _get_last_layer(self, ):
+        return self.upconv4.weight
+
     def forward(self, batch, mode):
         
         _, features = self.encode(batch)
@@ -137,7 +143,12 @@ class PoseSingleVQVAE(pl.LightningModule):
         rhand_rec_loss = (torch.abs(rhand - rhand_pred) * rhand_no_mask).sum() / (rhand_no_mask.sum()+ 1e-7)
         lhand_rec_loss = (torch.abs(lhand - lhand_pred) * lhand_no_mask).sum() / (lhand_no_mask.sum() + 1e-7)
 
-        loss = pose_rec_loss + face_rec_loss + rhand_rec_loss + lhand_rec_loss
+        if mode == "train":
+            pose_weight = self.calculate_adaptive_weight((rhand_rec_loss+lhand_rec_loss)/2, pose_rec_loss, last_layer=self._get_last_layer())
+            self.log('{}/pose_weight'.format(mode), pose_weight.detach(), prog_bar=True)
+        else:
+            pose_weight = 1.0
+        loss = (pose_weight * (pose_rec_loss + face_rec_loss) + (rhand_rec_loss + lhand_rec_loss))
 
         self.log('{}/pose_rec_loss'.format(mode), pose_rec_loss.detach(), prog_bar=True)
         self.log('{}/face_rec_loss'.format(mode), face_rec_loss.detach(), prog_bar=True)
@@ -148,12 +159,24 @@ class PoseSingleVQVAE(pl.LightningModule):
         if mode == "train" and self.global_step % 200 == 0:
             self.visualization(mode, "orig_vis", pose, face, rhand, lhand)
             self.visualization(mode, "pred_vis", pose_pred, face_pred, rhand_pred, lhand_pred)
-        if mode == "val" and self.global_step % 10 == 0:
+        if mode == "val":
             self.visualization(mode, "orig_vis", pose, face, rhand, lhand)
             self.visualization(mode, "pred_vis", pose_pred, face_pred, rhand_pred, lhand_pred)
 
         return loss
 
+    def calculate_adaptive_weight(self, hand_loss, pose_loss, last_layer=None):
+        if last_layer is not None:
+            hand_grads = torch.autograd.grad(hand_loss, last_layer, retain_graph=True)[0]
+            pose_grads = torch.autograd.grad(pose_loss, last_layer, retain_graph=True)[0]
+        else:
+            hand_grads = torch.autograd.grad(hand_loss, self.last_layer[0], retain_graph=True)[0]
+            pose_grads = torch.autograd.grad(pose_loss, self.last_layer[0], retain_graph=True)[0]
+
+        pose_weight = torch.norm(hand_grads) / (torch.norm(pose_grads) + 1e-4)
+        pose_weight = torch.clamp(pose_weight, 0.0, 1e4).detach()
+        pose_weight = pose_weight * self.pose_weight_discount
+        return pose_weight
 
     def visualization(self, mode, name, pose, face, rhand, lhand):
         # visualize
@@ -233,7 +256,7 @@ class PoseSingleVQVAE(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=3e-4, betas=(0.9, 0.999))
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1, gamma=0.5, last_epoch=-1)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1, gamma=0.9, last_epoch=-1)
         return [optimizer], [scheduler]
 
 

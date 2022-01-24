@@ -3,9 +3,9 @@ from configs.train_options import TrainOptions
 import pytorch_lightning as pl
 import argparse
 
-from models.pose_vqvae_single_vit import PoseSingleVQVAE
 from pytorch_lightning.callbacks import ModelCheckpoint
-from data.sign_pose_data import How2SignPoseData, PoseDataset
+from data.sign_pose2pose_data import How2SignPoseData, PoseDataset
+from models.pose_vqvae_single_vit_model import PoseSingleVQVAE
 from util.util import CheckpointEveryNSteps
 
 

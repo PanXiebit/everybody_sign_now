@@ -47,7 +47,7 @@ class PoseSentDataset(data.Dataset):
         text_path = opts.text_path
 
         text_dict = Dictionary()
-        
+        self.text_dict = text_dict
         # vocabulary._save_vocab_file(tokenized_sent_path, vocab_file)
         text_dict = text_dict.load(opts.vocab_file)
 
@@ -97,7 +97,7 @@ class PoseSentDataset(data.Dataset):
         return len(self._tokens)
 
     def __getitem__(self, idx):
-        tokens = self._tokens[idx]
+        tokens = self._tokens[idx] # IntTensor
         sent = self._sents[idx]
         keypoint_path = self._key_json_files[idx]
         keypoint_files = sorted(os.listdir(keypoint_path))[::2]
@@ -106,9 +106,55 @@ class PoseSentDataset(data.Dataset):
             posepts, facepts, r_handpts, l_handpts = self.readkeypointsfile_json(os.path.join(keypoint_path, keypoint_file))
             all_keypoints = np.array(posepts + facepts + r_handpts + l_handpts, dtype=np.float32) # 25, 
             points.append(np.expand_dims(all_keypoints, axis=0))
-        points = np.concatenate(points, axis=0)
+        
+        keypoints = np.concatenate(points, axis=0)
+        
+        pose_anchor = [1]
+        pose, pose_no_mask = self._get_x_y_and_normalize(keypoints[:, :75], pose_anchor) # [t, 3v]
+        
+        face_anchor = [33]
+        face, face_no_mask = self._get_x_y_and_normalize(keypoints[:, 75:75+210], face_anchor)
 
-        return dict(points=points, sent=sent, tokens=tokens)
+        hand_anchor = [0]
+        rhand, rhand_no_mask = self._get_x_y_and_normalize(keypoints[:, 75+210:75+210+63], hand_anchor)
+        lhand, lhand_no_mask = self._get_x_y_and_normalize(keypoints[:, 75+210+63:75+210+63+63], hand_anchor)
+
+        return dict(tokens=tokens,
+                    pose=pose, pose_no_mask=pose_no_mask,
+                    face=face, face_no_mask=face_no_mask,
+                    rhand=rhand, rhand_no_mask=rhand_no_mask, 
+                    lhand=lhand, lhand_no_mask=lhand_no_mask)
+
+    def _get_x_y_and_normalize(self, points_array, anchor_ids):
+        points_array = np.expand_dims(points_array, axis=0) # [1, T, 3*V]
+        x_points = points_array[:, :, ::3]  # [1, T, V]
+        y_points = points_array[:, :, 1::3] # [1, T, V]
+        probs = points_array[:, :, 2::3]    # [1, T, V]
+
+        no_mask = (probs != 0).astype(np.float32) # [1, T, V]
+
+        # print(probs[:, :2, :], no_mask[:, :2, :])
+        no_mask_anchor = no_mask[:, :, anchor_ids] # [1, T, 1]
+
+        x_anchor = x_points[:, :, anchor_ids] # [1, T, 1]
+        y_anchor = y_points[:, :, anchor_ids] # [1, T, 1]
+
+        # # print(x_points[:, :2, :], y_points[:, :2, :])
+
+        if (x_anchor == 0).any() or (y_anchor == 0).any():
+            # print(x_anchor, y_anchor)
+            x_anchor = np.mean(x_anchor) * (1 - no_mask_anchor) + x_anchor
+            y_anchor = np.mean(y_anchor) * (1 - no_mask_anchor) + y_anchor
+
+
+        x_points = ((x_points - x_anchor) / 1280.) * no_mask # [-1, 1]
+        y_points = ((y_points - y_anchor) / 720.) * no_mask
+
+        # x_points = ((x_points) / 640. - 1.) * no_mask
+        # y_points = ((y_points) / 360. - 1.) * no_mask
+
+        points = np.concatenate([x_points, y_points], axis=0) # [2, T, V]
+        return torch.FloatTensor(points), torch.IntTensor(no_mask)
 
     def normalize(self, vid):
         img = vid.float() / 127.5
@@ -128,9 +174,66 @@ class PoseSentDataset(data.Dataset):
             r_handpts += p['hand_right_keypoints_2d']
             l_handpts += p['hand_left_keypoints_2d']
         return posepts, facepts, r_handpts, l_handpts
+
+    def collate_fn(self, batch):        
+        pose = self.collate_points([x["pose"] for x in batch], pad_idx=0)
+        pose_no_mask = self.collate_points([x["pose_no_mask"] for x in batch], pad_idx=0)
+        
+        face = self.collate_points([x["face"] for x in batch], pad_idx=0)
+        face_no_mask = self.collate_points([x["face_no_mask"] for x in batch], pad_idx=0)
+        
+        rhand = self.collate_points([x["rhand"] for x in batch], pad_idx=0)
+        rhand_no_mask = self.collate_points([x["rhand_no_mask"] for x in batch], pad_idx=0)
+        
+        lhand = self.collate_points([x["lhand"] for x in batch], pad_idx=0)
+        lhand_no_mask = self.collate_points([x["lhand_no_mask"] for x in batch], pad_idx=0)
+        
+        points_len = torch.IntTensor([x["pose"].size(0) for x in batch])
+
+        tokens = self.collate_tokens([x["tokens"] for x in batch], pad_idx=self.text_dict.pad())
+        tokens_len = torch.IntTensor([x["tokens"].size(0) for x in batch])
+            
+        return dict(points_len=points_len, tokens=tokens, tokens_len=tokens_len,
+                    pose=pose, pose_no_mask=pose_no_mask,
+                    face=face, face_no_mask=face_no_mask,
+                    rhand=rhand, rhand_no_mask=rhand_no_mask, 
+                    lhand=lhand, lhand_no_mask=lhand_no_mask)
+
+
+    def collate_tokens(self, values, pad_idx, left_pad=False):
+        
+        size = max(v.size(0) for v in values)
+        res = values[0].new(len(values), size).fill_(pad_idx)
+
+        def copy_tensor(src, dst):
+            assert dst.numel() == src.numel()
+            dst.copy_(src)
+        
+        for i, v in enumerate(values):
+            copy_tensor(v, res[i][size - len(v):] if left_pad else res[i][:len(v)])
+        return res
+
+    def collate_points(self, values, pad_idx, left_pad=False):
+        """values[0].shape = [c, t, v]
+        """
+        
+        c, _, v = values[0].shape
+        size = max(v.size(1) for v in values)
+        print("size: ", size)
+
+        res = values[0].new(len(values), c, size, v).fill_(pad_idx)
+
+        def copy_tensor(src, dst):
+            assert dst.numel() == src.numel()
+            dst.copy_(src)
+        
+        for i, v in enumerate(values):
+            # print(v.shape, res[i][:, size - v.size(1):, :].shape)
+            copy_tensor(v, res[i][:, size - v.size(1):, :] if left_pad else res[i][:, :v.size(1), :])
+        return res
         
 
-class How2SignImagePairData(pl.LightningDataModule):
+class How2SignTextPoseData(pl.LightningDataModule):
 
     def __init__(self, args):
         super().__init__()
@@ -160,7 +263,8 @@ class How2SignImagePairData(pl.LightningDataModule):
             num_workers=self.args.num_workers,
             pin_memory=True,
             sampler=sampler,
-            shuffle=False
+            shuffle=False,
+            collate_fn=dataset.collate_fn,
         )
         return dataloader
 
@@ -173,10 +277,7 @@ class How2SignImagePairData(pl.LightningDataModule):
     def test_dataloader(self):
         return self.val_dataloader()
 
-    def collate_fn(self, batch):
-        pass
-
-
+    
 if __name__ == "__main__":
     pass
     csv_path = "Data"
@@ -188,19 +289,24 @@ if __name__ == "__main__":
         resolution = 256
         csv_path=csv_path
         data_path=data_path
-        batchSize=1
+        batchSize=5
         num_workers=32
         text_path=text_path
         vocab_file = vocab_file
         
     opts= Option()
 
-    # dataloader = How2SignImagePairData(opts).train_dataloader()
-    dataloader = PoseSentDataset(opts)
+    dataloader = How2SignTextPoseData(opts).train_dataloader()
+    # dataloader = PoseSentDataset(opts)
 
     for i, data in enumerate(dataloader):
         if i > 20: break
-        print(data["points"].shape)
-        print(data["sent"])
         print(data["tokens"].shape)
+        print(data["tokens_len"])
+        print(data["pose"].shape)
+        print(data["face"].shape)
+        print(data["rhand"].shape)
+        print(data["lhand"].shape)
+        print(data["points_len"])
+        print("-"*10)
     exit()

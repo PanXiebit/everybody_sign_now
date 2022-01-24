@@ -105,7 +105,7 @@ class PoseDataset(data.Dataset):
         keypoints = self._clips[idx]
 
         pose_anchor = [1]
-        pose, pose_no_mask = self._get_x_y_and_normalize(keypoints[:, :75], pose_anchor) # [bs, c, t, v]
+        pose, pose_no_mask = self._get_x_y_and_normalize(keypoints[:, :75], pose_anchor) # [t, 3v]
         
         face_anchor = [33]
         face, face_no_mask = self._get_x_y_and_normalize(keypoints[:, 75:75+210], face_anchor)

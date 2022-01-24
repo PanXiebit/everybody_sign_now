@@ -3,9 +3,9 @@ from configs.train_options import TrainOptions
 import pytorch_lightning as pl
 import argparse
 
-from models.pix2pixHD_model import Pix2PixHDModel
+from models.text2pose_model import Text2PoseModel
 from pytorch_lightning.callbacks import ModelCheckpoint
-from data.sign_pose2rgb_data import How2SignImagePairData
+from data.sign_text2pose_data import How2SignTextPoseData
 from util.util import CheckpointEveryNSteps
 
 
@@ -13,20 +13,20 @@ from util.util import CheckpointEveryNSteps
 def main():
     pl.seed_everything(1234)
     parser = argparse.ArgumentParser()
+    parser = Text2PoseModel.add_model_specific_args(parser)
     parser = pl.Trainer.add_argparse_args(parser)
-
     opt = TrainOptions(parser).parse()
     print(opt)
 
-    data = How2SignImagePairData(opt)
+    data = How2SignTextPoseData(opt)
     data.train_dataloader()
     data.test_dataloader()
-    model = Pix2PixHDModel(opt)
-    model = model.load_from_checkpoint("lightning_logs/version_1/checkpoints/Checkpoint_epoch=0_global_step=72000.ckpt")
-    
+    model = Text2PoseModel(opt)
+    # model = model.load_from_checkpoint("lightning_logs/version_0/checkpoints/epoch=1-step=2249.ckpt")
+    exit()
     callbacks = []
     callbacks.append(ModelCheckpoint(monitor=None, filename='{epoch}-{step}', save_top_k=1))
-    callbacks.append(CheckpointEveryNSteps(6000, 2))
+    # callbacks.append(CheckpointEveryNSteps(6000, 2))
 
     kwargs = dict()
     if opt.gpus > 1:
