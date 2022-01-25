@@ -143,12 +143,13 @@ class PoseSingleVQVAE(pl.LightningModule):
         rhand_rec_loss = (torch.abs(rhand - rhand_pred) * rhand_no_mask).sum() / (rhand_no_mask.sum()+ 1e-7)
         lhand_rec_loss = (torch.abs(lhand - lhand_pred) * lhand_no_mask).sum() / (lhand_no_mask.sum() + 1e-7)
 
-        if mode == "train":
-            pose_weight = self.calculate_adaptive_weight((rhand_rec_loss+lhand_rec_loss)/2, pose_rec_loss, last_layer=self._get_last_layer())
-            self.log('{}/pose_weight'.format(mode), pose_weight.detach(), prog_bar=True)
-        else:
-            pose_weight = 1.0
-        loss = (pose_weight * (pose_rec_loss + face_rec_loss) + (rhand_rec_loss + lhand_rec_loss))
+        # if mode == "train":
+        #     pose_weight = self.calculate_adaptive_weight((rhand_rec_loss+lhand_rec_loss)/2, pose_rec_loss, last_layer=self._get_last_layer())
+        #     self.log('{}/pose_weight'.format(mode), pose_weight.detach(), prog_bar=True)
+        # else:
+        pose_weight = 1.0
+        hand_weight = 2.0
+        loss = (pose_weight * (pose_rec_loss + face_rec_loss) + hand_weight * (rhand_rec_loss + lhand_rec_loss))
 
         self.log('{}/pose_rec_loss'.format(mode), pose_rec_loss.detach(), prog_bar=True)
         self.log('{}/face_rec_loss'.format(mode), face_rec_loss.detach(), prog_bar=True)
@@ -256,7 +257,7 @@ class PoseSingleVQVAE(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=3e-4, betas=(0.9, 0.999))
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1, gamma=0.9, last_epoch=-1)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1, gamma=0.5, last_epoch=-1)
         return [optimizer], [scheduler]
 
 
