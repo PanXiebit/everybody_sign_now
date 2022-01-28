@@ -13,7 +13,7 @@ from data.data_prep.renderopenpose import *
 import torchvision
 import cv2
 from modules.attention import Transformer
-
+from modules.nearby_attn import AttnBlock
 
 def zero(x):
     return 0
@@ -25,16 +25,25 @@ class PoseVitVQVAE(pl.LightningModule):
     def __init__(self, args):
         super().__init__()
 
+        self.args = args
+
+        if args.temporal_downsample == 4:
+            ds_kernels = [2,2]
+        elif args.temporal_downsample == 2:
+            ds_kernels = [1,2]
+        elif args.temporal_downsample == 1:
+            ds_kernels = [1,1]
+        
         self.encoder = nn.ModuleDict()
-        self.encoder["pose"] = ST_GCN_18(in_channels=2, graph_cfg={'layout':'pose25', 'strategy':'spatial'})
-        self.encoder["face"] = ST_GCN_18(in_channels=2, graph_cfg={'layout':'face70', 'strategy':'spatial'})
-        self.encoder["hand"] = ST_GCN_18(in_channels=2, graph_cfg={'layout':'hand21', 'strategy':'spatial'})
+        self.encoder["pose"] = ST_GCN_18(in_channels=2, ds_kernels=ds_kernels, graph_cfg={'layout':'pose25', 'strategy':'spatial'})
+        self.encoder["face"] = ST_GCN_18(in_channels=2, ds_kernels=ds_kernels, graph_cfg={'layout':'face70', 'strategy':'spatial'})
+        self.encoder["hand"] = ST_GCN_18(in_channels=2, ds_kernels=ds_kernels, graph_cfg={'layout':'hand21', 'strategy':'spatial'})
 
         self.tokens = {}
-        self.tokens["pose"] = [[17, 15, 0, 16, 18], [0, 1, 8, 9, 12], [4, 3, 2, 1, 5], [2, 1, 5, 6, 7]]
-        self.tokens["rhand"] = [[0,1,2,3,4], [0,5,6,7,8], [0,9,10,11,12], [0,13,14,15,16], [0,17,18,19,20]]
-        self.tokens["lhand"] = [[0,1,2,3,4], [0,5,6,7,8], [0,9,10,11,12], [0,13,14,15,16], [0,17,18,19,20]]
-        self.tokens["face"] = [[0,2,4,6,8], [8,10,12,14,16], [17,18,19,20,21], [22,23,24,25,26], [27,28,29,30,33]]
+        self.tokens["pose"] = [[17,15,0,16,18], [0,1,9,8,12], [4,3,2,1,5], [2,1,5,6,7], [3,2,1,5,6]] # 25
+        self.tokens["rhand"] = [[0,1,2,3,4], [0,5,6,7,8], [0,9,10,11,12], [0,13,14,15,16], [0,17,18,19,20]] # 25
+        self.tokens["lhand"] = [[0,1,2,3,4], [0,5,6,7,8], [0,9,10,11,12], [0,13,14,15,16], [0,17,18,19,20]] # 25
+        self.tokens["face"] = [[0,2,4,6,8], [8,10,12,14,16], [17,18,19,20,21], [22,23,24,25,26], [27,28,29,30,33]] # 25
 
         # downsample
         self.points_downsample = nn.ModuleList()
@@ -44,17 +53,47 @@ class PoseVitVQVAE(pl.LightningModule):
             self.points_downsample.append(conv)
         
         # transformer
-        self.transformer = Transformer(256, 3, 4, 64, 1024, 0.1)
+        # spatial-temporal attention
+        if args.atten_type == "spatial-temporal-joint":
+            self.st_transformer = Transformer(dim=256, depth=3, heads=4, dim_head=64, mlp_dim=1024)
+        elif args.atten_type == "spatial-temporal-divided":
+            self.s_transformer = Transformer(dim=256, depth=3, heads=4, dim_head=64, mlp_dim=1024)
+            self.t_transformer = Transformer(dim=256, depth=3, heads=4, dim_head=64, mlp_dim=1024)
+        elif args.atten_type == "spatial-only":
+            self.s_transformer = Transformer(dim=256, depth=3, heads=4, dim_head=64, mlp_dim=1024)
+        else:
+            raise ValueError("attn_type is wrong!")
 
         self.pre_vq_conv = SamePadConv2d(256, 256, 1)
         self.post_vq_conv = SamePadConv2d(256, 256, 1)
         self.codebook = Codebook(args.n_codes, args.embedding_dim)
 
-        self.upconv1 = nn.ConvTranspose2d(256, 256, kernel_size=(1, 5), stride=1)
-        self.upconv2 = SamePadConvTranspose2d(256, 128, kernel_size=4, stride=2)
-        self.upconv3 = SamePadConvTranspose2d(128, 64, kernel_size=4, stride=2)
-        self.upconv4 = nn.ConvTranspose2d(64, 2, kernel_size=(1,4), stride=1)        
+        if args.temporal_downsample == 4:
+                us_kernels = [4,4]
+                up_steps = [2,2]
+        elif args.temporal_downsample == 2:
+            us_kernels = [1,4]
+            up_steps = [1,2]
+        elif args.temporal_downsample == 1:
+            us_kernels = [1,1]
+            up_steps = [1,1]
 
+        if self.args.decoder_type == "joint":
+            self.upsample = nn.Sequential(
+                nn.ConvTranspose2d(256, 256, kernel_size=(1, 5), stride=1), 
+                SamePadConvTranspose2d(256, 128, kernel_size=(us_kernels[0], 4), stride=(up_steps[0], 2)),
+                SamePadConvTranspose2d(128, 64, kernel_size=(us_kernels[1], 4), stride=(up_steps[1], 2)),
+                nn.ConvTranspose2d(64, 2, kernel_size=(1,5), stride=1)
+            )
+        elif self.args.decoder_type == "divided":
+            self.upsample = nn.Sequential(
+                nn.ConvTranspose2d(256, 256, kernel_size=(1, 2), stride=1), 
+                SamePadConvTranspose2d(256, 128, kernel_size=(us_kernels[0], 4), stride=(up_steps[0], 2)),
+                SamePadConvTranspose2d(128, 64, kernel_size=(us_kernels[1], 4), stride=(up_steps[1], 2)),
+                nn.ConvTranspose2d(64, 2, kernel_size=(1,2), stride=1)
+            )
+        else:
+            raise ValueError("decoder_type is wrong!")
 
     def heuristic_downsample(self, points_feat, token_ids):
         """points_feat: [bs, c, t, v]
@@ -71,34 +110,59 @@ class PoseVitVQVAE(pl.LightningModule):
 
     def encode(self, batch):
         pose_feat = self.encoder["pose"](batch["pose"])
-    
-        pose_feat = self.heuristic_downsample(pose_feat, self.tokens["pose"])
-        
         face_feat = self.encoder["face"](batch["face"])
-        face_feat = self.heuristic_downsample(face_feat, self.tokens["face"])
-
         rhand_feat = self.encoder["hand"](batch["rhand"])
-        rhand_feat = self.heuristic_downsample(rhand_feat, self.tokens["rhand"])
-
         lhand_feat = self.encoder["hand"](batch["lhand"])
+        # print("pose_feat, face_feat, rhand_feat, lhand_feat: ", pose_feat.shape, face_feat.shape, rhand_feat.shape, lhand_feat.shape)
+
+        pose_feat = self.heuristic_downsample(pose_feat, self.tokens["pose"])
+        face_feat = self.heuristic_downsample(face_feat, self.tokens["face"])
+        rhand_feat = self.heuristic_downsample(rhand_feat, self.tokens["rhand"])
         lhand_feat = self.heuristic_downsample(lhand_feat, self.tokens["lhand"])
+        # print("pose_feat, face_feat, rhand_feat, lhand_feat: ", pose_feat.shape, face_feat.shape, rhand_feat.shape, lhand_feat.shape)
 
-        feat = torch.cat([pose_feat, face_feat, rhand_feat, lhand_feat], dim=-1).squeeze(-2) # [bs, hidden, 1, 19]
+        feat = torch.cat([pose_feat, face_feat, rhand_feat, lhand_feat], dim=-1) # [bs, hidden, t/4, 20]
+        
+        bs, h, t, v = feat.size()
+        if self.args.atten_type == "spatial-temporal-joint":
+            feat = feat.view(bs, h, t*v).permute(0, 2, 1).contiguous()
+            feat = self.st_transformer(feat).permute(0, 2, 1).contiguous()  # [bs, hidden, t/4, 20]
+            feat = feat.view(bs, h, t, v)
+        elif self.args.atten_type == "spatial-temporal-divided":
+            feat = feat.permute(0, 2, 3, 1).contiguous().view(bs*t, v, h)  # [bs, h, t, v] -> [bs, t, v, h] -> [bs*t, v, h]
+            feat = self.s_transformer(feat) # [bs*t, v, h]
+            feat = feat.view(bs, t, v, h).permute(0, 2, 1, 3).contiguous()  # [bs, v, t, h]
+            feat = feat.view(bs*v, t, h)
+            feat = self.t_transformer(feat).view(bs, v, t, h)
+            feat = feat.permute(0, 3, 2, 1).contiguous() # [bs, h, t, v]
+        elif self.args.atten_type == "spatial-only":
+            feat = feat.permute(0, 2, 3, 1).contiguous().view(bs*t, v, h)
+            feat = self.s_transformer(feat) # [bs*t, v, h]
+            feat = feat.view(bs, t, v, h).permute(0, 3, 1, 2).contiguous() # [bs, h, t, v]
+        else:
+            raise ValueError("attn_type is wrong!")
 
-        feat = feat.permute(0, 2, 1).contiguous()
-
-        feat = self.transformer(feat).permute(0, 2, 1).contiguous().unsqueeze(2) # [bs, hidden, 19]
         vq_output = self.codebook(self.pre_vq_conv(feat))
         return vq_output['encodings'], vq_output['embeddings']
 
     def decode(self, feat):
         feat = self.post_vq_conv(feat)
-        feat = self.upconv1(feat)
-        feat = self.upconv2(feat)
-        feat = self.upconv3(feat)
-        feat = self.upconv4(feat)
-
-        return feat
+        if self.args.decoder_type == "divided":
+            pose_pred = self.upsample(feat[..., 0:5])
+            face_pred = self.upsample(feat[..., 5:10])
+            rhand_pred = self.upsample(feat[..., 10:15])
+            lhand_pred = self.upsample(feat[..., 15:20])
+        elif self.args.decoder_type == "joint":
+            predictions = self.upsample(feat)
+            pose_pred = predictions[..., 0:25]
+            face_pred = predictions[..., 25:50]
+            rhand_pred = predictions[..., 50:75]
+            lhand_pred = predictions[..., 75:100]
+        else:
+            raise ValueError("decoder_type is wrong!")
+        # print(pose_pred.shape, face_pred.shape, rhand_pred.shape, lhand_pred.shape)
+        # exit()
+        return pose_pred, face_pred, rhand_pred, lhand_pred
 
     def selects(self, x, part_name):
         origin = []
@@ -109,20 +173,18 @@ class PoseVitVQVAE(pl.LightningModule):
 
 
     def forward(self, batch, mode):
-        
-        _, features = self.encode(batch)
-        predictions = self.decode(features)
-        pose_pred = predictions[:, :, :, :20]
-        face_pred = predictions[:, :, :, 20:45]
-        rhand_pred = predictions[:, :, :, 45:70]
-        lhand_pred = predictions[:, :, :, 70:95]
+        # print("pose: ", batch["pose"].shape)
 
-        # print("predictions: ", predictions.shape, pose_pred.shape, face_pred.shape, rhand_pred.shape, lhand_pred.shape)
+        _, features = self.encode(batch)
+        pose_pred, face_pred, rhand_pred, lhand_pred = self.decode(features)
+
+        # print("predictions: ", pose_pred.shape, face_pred.shape, rhand_pred.shape, lhand_pred.shape)
 
         pose = self.selects(batch["pose"], "pose")
         face = self.selects(batch["face"], "face")
         rhand = self.selects(batch["rhand"], "rhand")
         lhand = self.selects(batch["lhand"], "lhand")
+        
         
         pose_no_mask = self.selects(batch["pose_no_mask"], "pose")
         face_no_mask = self.selects(batch["face_no_mask"], "face")
@@ -131,7 +193,7 @@ class PoseVitVQVAE(pl.LightningModule):
 
         # print("pose: ", pose.shape, face.shape, rhand.shape, lhand.shape)
         # print("pose_no_mask: ", pose_no_mask.shape, face_no_mask.shape, rhand_no_mask.shape, lhand_no_mask.shape)
-        # print("abs: ", torch.abs(pose - pose_pred).shape)
+        # exit()
 
         pose_rec_loss = (torch.abs(pose - pose_pred) * pose_no_mask).sum() / (pose_no_mask.sum() + 1e-7)
         # print("pose_rec_loss: ", pose_rec_loss.shape, pose_no_mask.shape)
@@ -153,7 +215,6 @@ class PoseVitVQVAE(pl.LightningModule):
         if mode == "val":
             self.visualization(mode, "orig_vis", pose, face, rhand, lhand)
             self.visualization(mode, "pred_vis", pose_pred, face_pred, rhand_pred, lhand_pred)
-
         return loss
 
 
@@ -236,7 +297,7 @@ class PoseVitVQVAE(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=3e-4, betas=(0.9, 0.999))
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 2, gamma=0.6, last_epoch=-1)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1, gamma=0.5, last_epoch=-1)
         return [optimizer], [scheduler]
 
 
@@ -244,13 +305,11 @@ class PoseVitVQVAE(pl.LightningModule):
     def add_model_specific_args(parent_parser):
         parser = argparse.ArgumentParser(parents=[parent_parser], add_help=False)
         parser.add_argument('--embedding_dim', type=int, default=256)
-        parser.add_argument('--n_codes', type=int, default=2048)
-        parser.add_argument('--n_hiddens', type=int, default=240)
-        parser.add_argument('--n_res_layers', type=int, default=4)
+        parser.add_argument('--n_codes', type=int, default=1024)
+        parser.add_argument('--n_hiddens', type=int, default=256)
+        parser.add_argument('--n_res_layers', type=int, default=2)
         parser.add_argument('--downsample', nargs='+', type=int, default=(4, 4, 4))
         return parser
-
-
 
 class ST_GCN_18(nn.Module):
     r"""Spatial temporal graph convolutional networks.
@@ -271,6 +330,7 @@ class ST_GCN_18(nn.Module):
     """
     def __init__(self,
                  in_channels,
+                 ds_kernels,
                  graph_cfg,
                  edge_importance_weighting=True,
                  data_bn=True,
@@ -296,10 +356,10 @@ class ST_GCN_18(nn.Module):
             st_gcn_block(64, 64, kernel_size, 1, **kwargs),
             st_gcn_block(64, 64, kernel_size, 1, **kwargs),
             st_gcn_block(64, 64, kernel_size, 1, **kwargs),
-            st_gcn_block(64, 128, kernel_size, 2, **kwargs),
+            st_gcn_block(64, 128, kernel_size, ds_kernels[0], **kwargs),
             st_gcn_block(128, 128, kernel_size, 1, **kwargs),
             st_gcn_block(128, 128, kernel_size, 1, **kwargs),
-            st_gcn_block(128, 256, kernel_size, 2, **kwargs),
+            st_gcn_block(128, 256, kernel_size, ds_kernels[1], **kwargs),
             st_gcn_block(256, 256, kernel_size, 1, **kwargs),
             st_gcn_block(256, 256, kernel_size, 1, **kwargs),
         ))
@@ -748,15 +808,15 @@ if __name__ == "__main__":
 
     # out = model.extract_feature(x)
     # print(out.shape)
-    x = torch.randn(2, 256, 1, 19)
+    x = torch.randn(2, 256, 12, 20)
 
     # m1 = SamePadConv2d(64, 64, 4, (1,2))
     # x = m1(x)
     # print("x: ", x.shape)
     m0 = nn.ConvTranspose2d(256, 64, kernel_size=(1, 5), stride=1)
-    m1 = SamePadConvTranspose2d(64, 64, kernel_size=4, stride=2)
-    m2 = SamePadConvTranspose2d(64, 64, kernel_size=4, stride=2)
-    m3 = nn.ConvTranspose2d(64, 64, kernel_size=(1,4), stride=1) # (input - 1) * stride + output_padding - 2*padding + kernel
+    m1 = SamePadConvTranspose2d(64, 64, kernel_size=(1,4), stride=(1,2))
+    m2 = SamePadConvTranspose2d(64, 64, kernel_size=(1,4), stride=(1,2))
+    m3 = nn.ConvTranspose2d(64, 64, kernel_size=(1,5), stride=1) # (input - 1) * stride + output_padding - 2*padding + kernel
     x = m0(x)
     print("out: ", x.shape)
     x = m1(x)

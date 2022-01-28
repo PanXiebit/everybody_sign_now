@@ -7,7 +7,7 @@ from models.text2pose_model import Text2PoseModel
 from pytorch_lightning.callbacks import ModelCheckpoint
 from data.sign_text2pose_data import How2SignTextPoseData
 from util.util import CheckpointEveryNSteps
-
+from data.vocabulary import Dictionary
 
 
 def main():
@@ -21,9 +21,11 @@ def main():
     data = How2SignTextPoseData(opt)
     data.train_dataloader()
     data.test_dataloader()
-    model = Text2PoseModel(opt)
-    # model = model.load_from_checkpoint("lightning_logs/version_0/checkpoints/epoch=1-step=2249.ckpt")
-    exit()
+
+    text_dict = Dictionary()
+    text_dict = text_dict.load(opt.vocab_file)
+    model = Text2PoseModel(opt, text_dict)
+    
     callbacks = []
     callbacks.append(ModelCheckpoint(monitor=None, filename='{epoch}-{step}', save_top_k=1))
     # callbacks.append(CheckpointEveryNSteps(6000, 2))

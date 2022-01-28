@@ -188,7 +188,7 @@ class PoseSentDataset(data.Dataset):
         lhand = self.collate_points([x["lhand"] for x in batch], pad_idx=0)
         lhand_no_mask = self.collate_points([x["lhand_no_mask"] for x in batch], pad_idx=0)
         
-        points_len = torch.IntTensor([x["pose"].size(0) for x in batch])
+        points_len = torch.IntTensor([x["pose"].size(1) for x in batch])
 
         tokens = self.collate_tokens([x["tokens"] for x in batch], pad_idx=self.text_dict.pad())
         tokens_len = torch.IntTensor([x["tokens"].size(0) for x in batch])
@@ -219,8 +219,6 @@ class PoseSentDataset(data.Dataset):
         
         c, _, v = values[0].shape
         size = max(v.size(1) for v in values)
-        print("size: ", size)
-
         res = values[0].new(len(values), c, size, v).fill_(pad_idx)
 
         def copy_tensor(src, dst):

@@ -19,7 +19,11 @@ class BaseOptions():
         self.parser.add_argument('--use_dropout', action='store_true', help='use dropout for the generator')
         self.parser.add_argument('--num_workers', type=int, default=24, help='')
 
-        # input/output sizes       
+        # input/output sizes
+               
+        self.parser.add_argument('--decoder_type', type=str, default="", help='')
+        self.parser.add_argument('--atten_type', type=str, default="", help='')
+        self.parser.add_argument('--temporal_downsample', type=int, default=2, help='input batch size')
         self.parser.add_argument('--batchSize', type=int, default=1, help='input batch size')
         self.parser.add_argument('--debug', type=int, default=0, help='debug')
         self.parser.add_argument('--sequence_length', type=int, default=16, help='sequence_length')
@@ -83,17 +87,19 @@ class BaseOptions():
         self.opt = self.parser.parse_args()
         self.opt.isTrain = self.isTrain   # train or test
 
-        str_ids = self.opt.gpu_ids.split(',')
-        self.opt.gpu_ids = []
-        for str_id in str_ids:
-            id = int(str_id)
-            if id >= 0:
-                self.opt.gpu_ids.append(id)
-        
-        # set gpu ids
-        if len(self.opt.gpu_ids) > 0:
-            torch.cuda.set_device(self.opt.gpu_ids[0])
+        os.environ["CUDA_VISIBLE_DEVICES"] = self.opt.gpu_ids
 
+        # str_ids = self.opt.gpu_ids.split(',')
+        # self.opt.gpu_ids = []
+        # for str_id in str_ids:
+        #     id = int(str_id)
+        #     if id >= 0:
+        #         self.opt.gpu_ids.append(id)
+        
+        # # set gpu ids
+        # if len(self.opt.gpu_ids) > 0:
+        #     torch.cuda.set_device(self.opt.gpu_ids[0])
+        
         args = vars(self.opt)
 
         print('------------ Options -------------')

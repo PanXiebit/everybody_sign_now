@@ -24,7 +24,7 @@ def iden(x):
 class PoseSingleVQVAE(pl.LightningModule):
     def __init__(self, args):
         super().__init__()
-
+        self.args = args
         self.encoder = nn.ModuleDict()
         self.encoder["pose"] = ST_GCN_18(in_channels=2, graph_cfg={'layout':'pose25', 'strategy':'spatial'})
         self.encoder["face"] = ST_GCN_18(in_channels=2, graph_cfg={'layout':'face70', 'strategy':'spatial'})
@@ -85,11 +85,15 @@ class PoseSingleVQVAE(pl.LightningModule):
         lhand_feat = self.encoder["hand"](batch["lhand"])
         lhand_feat = self.heuristic_downsample(lhand_feat, self.tokens["lhand"])
 
-        feat = torch.cat([pose_feat, face_feat, rhand_feat, lhand_feat], dim=-1).squeeze(-2) # [bs, hidden, 19]
+        # feat = torch.cat([pose_feat, face_feat, rhand_feat, lhand_feat], dim=-1).squeeze(-2) # [bs, hidden, 1, 19]
+        # feat = feat.permute(0, 2, 1).contiguous()
+        
+        feat = torch.cat([pose_feat, face_feat, rhand_feat, lhand_feat], dim=-1) # [bs, hidden, t, 19]
+        bs, h, t, v = feat.shape
 
-        feat = feat.permute(0, 2, 1).contiguous()
+        feat = feat.permute(0, 2, 3, 1).contiguous().view(bs*t, v, h)  # [bs, hidden, t, 19] -> [bs*t, v, h]
 
-        feat = self.transformer(feat).permute(0, 2, 1).contiguous().unsqueeze(2) # [bs, hidden, 19]
+        feat = self.transformer(feat).permute(0, 2, 1).contiguous().unsqueeze(2) # [bs, hidden, 19] -> # [bs, hidden, 19]
         vq_output = self.codebook(self.pre_vq_conv(feat))
         return vq_output['encodings'], vq_output['embeddings']
 
@@ -113,7 +117,13 @@ class PoseSingleVQVAE(pl.LightningModule):
         return self.upconv4.weight
 
     def forward(self, batch, mode):
-        
+
+        print(batch["pose"].shape)
+        print(batch["face"].shape)
+        print(batch["pose_no_mask"].shape)
+        print(batch["face_no_mask"].shape)
+
+        print(batch.keys())
         _, features = self.encode(batch)
         predictions = self.decode(features).unsqueeze(2)
         pose_pred = predictions[:, :, :, :20]
