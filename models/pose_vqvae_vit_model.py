@@ -92,6 +92,17 @@ class PoseVitVQVAE(pl.LightningModule):
                 SamePadConvTranspose2d(128, 64, kernel_size=(us_kernels[1], 4), stride=(up_steps[1], 2)),
                 nn.ConvTranspose2d(64, 2, kernel_size=(1,2), stride=1)
             )
+        elif self.args.decoder_type == "divided-unshare":
+
+            upsample = nn.Sequential(
+                nn.ConvTranspose2d(256, 256, kernel_size=(1, 2), stride=1), 
+                SamePadConvTranspose2d(256, 128, kernel_size=(us_kernels[0], 4), stride=(up_steps[0], 2)),
+                SamePadConvTranspose2d(128, 64, kernel_size=(us_kernels[1], 4), stride=(up_steps[1], 2)),
+                nn.ConvTranspose2d(64, 2, kernel_size=(1,2), stride=1)
+            )
+            self.upsample = nn.ModuleDict()
+            for name in ["pose", "face", "rhand", "lhand"]:
+                self.upsample[name] = upsample
         else:
             raise ValueError("decoder_type is wrong!")
 
@@ -158,6 +169,11 @@ class PoseVitVQVAE(pl.LightningModule):
             face_pred = predictions[..., 25:50]
             rhand_pred = predictions[..., 50:75]
             lhand_pred = predictions[..., 75:100]
+        elif self.args.decoder_type == "divided-unshare":
+            pose_pred = self.upsample["pose"](feat[..., 0:5])
+            face_pred = self.upsample["face"](feat[..., 5:10])
+            rhand_pred = self.upsample["rhand"](feat[..., 10:15])
+            lhand_pred = self.upsample["lhand"](feat[..., 15:20])
         else:
             raise ValueError("decoder_type is wrong!")
         # print(pose_pred.shape, face_pred.shape, rhand_pred.shape, lhand_pred.shape)
@@ -296,9 +312,12 @@ class PoseVitVQVAE(pl.LightningModule):
 
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=3e-4, betas=(0.9, 0.999))
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1, gamma=0.5, last_epoch=-1)
-        return [optimizer], [scheduler]
+        # optimizer = torch.optim.Adam(self.parameters(), lr=3e-4, betas=(0.9, 0.999))
+        # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1, gamma=0.5, last_epoch=-1)
+        # return [optimizer], [scheduler]
+
+        optimizer = torch.optim.Adam(self.parameters(), lr=4e-6, betas=(0.9, 0.999))
+        return [optimizer]
 
 
     @staticmethod
