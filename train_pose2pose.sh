@@ -4,7 +4,7 @@ decoder_type="divided-unshare"
 temporal_downsample=4
 sequence_length=16
 
-python -m train_pose_recon \
+python -m train_pose2pose \
     --gpus 2 \
     --batchSize 24 \
     --data_path /data/xp_data/slr/EverybodySignNow/Data/how2sign \

@@ -21,6 +21,7 @@ class BaseOptions():
 
         # input/output sizes
                
+        self.parser.add_argument('--max_frames_num', type=int, default=400, help='')
         self.parser.add_argument('--decoder_type', type=str, default="", help='')
         self.parser.add_argument('--atten_type', type=str, default="", help='')
         self.parser.add_argument('--temporal_downsample', type=int, default=2, help='input batch size')

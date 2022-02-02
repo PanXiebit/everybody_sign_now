@@ -25,7 +25,8 @@ def main():
     text_dict = Dictionary()
     text_dict = text_dict.load(opt.vocab_file)
     model = Text2PoseModel(opt, text_dict)
-    
+    # print(model)
+    # exit()
     callbacks = []
     callbacks.append(ModelCheckpoint(monitor=None, filename='{epoch}-{step}', save_top_k=1))
     # callbacks.append(CheckpointEveryNSteps(6000, 2))

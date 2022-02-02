@@ -45,6 +45,7 @@ class PoseSentDataset(data.Dataset):
         # self.hand_generator = opts.hand_generator
         data_path = opts.data_path
         text_path = opts.text_path
+        self.max_frames_num = opts.max_frames_num
 
         text_dict = Dictionary()
         self.text_dict = text_dict
@@ -106,8 +107,12 @@ class PoseSentDataset(data.Dataset):
             posepts, facepts, r_handpts, l_handpts = self.readkeypointsfile_json(os.path.join(keypoint_path, keypoint_file))
             all_keypoints = np.array(posepts + facepts + r_handpts + l_handpts, dtype=np.float32) # 25, 
             points.append(np.expand_dims(all_keypoints, axis=0))
-        
         keypoints = np.concatenate(points, axis=0)
+        if len(points) > self.max_frames_num:
+            # print("{} frame nums is {}".format(keypoint_path, len(points)))
+            samples = random.sample(list(range(len(points))), self.max_frames_num)
+            samples = sorted(samples)
+            keypoints = keypoints[samples]
         
         pose_anchor = [1]
         pose, pose_no_mask = self._get_x_y_and_normalize(keypoints[:, :75], pose_anchor) # [t, 3v]
@@ -219,6 +224,7 @@ class PoseSentDataset(data.Dataset):
         
         c, _, v = values[0].shape
         size = max(v.size(1) for v in values)
+        if size % 4 != 0: size = math.ceil(size/4)*4  # TODO?
         res = values[0].new(len(values), c, size, v).fill_(pad_idx)
 
         def copy_tensor(src, dst):
@@ -226,7 +232,6 @@ class PoseSentDataset(data.Dataset):
             dst.copy_(src)
         
         for i, v in enumerate(values):
-            # print(v.shape, res[i][:, size - v.size(1):, :].shape)
             copy_tensor(v, res[i][:, size - v.size(1):, :] if left_pad else res[i][:, :v.size(1), :])
         return res
         

@@ -1,12 +1,17 @@
 python -m train_text2pose \
-    --gpus 1 \
-    --batchSize 5 \
-    --data_path "/Dataset/how2sign/video_and_keypoint" \
+    --gpus 2 \
+    --batchSize 4 \
+    --data_path "/data/xp_data/slr/EverybodySignNow/Data/how2sign" \
     --text_path "data/text2gloss/" \
     --vocab_file "data/text2gloss/how2sign_vocab.txt" \
-    --pose_vqvae "lightning_logs/seqlen_1_heuristic_downsample_lr_decay_v2/checkpoints/epoch=37-step=752323.ckpt" \
-    --hparams_file "lightning_logs/seqlen_1_heuristic_downsample_lr_decay_v2/hparams.yaml" \
-    --batchSize 4 \
+    --pose_vqvae "logs/SeqLen_{16}_TemDs_{4}_AttenType_{spatial-temporal-joint}_DecoderType_{divided-unshare}_lr/lightning_logs/version_1/checkpoints/epoch=123-step=371751.ckpt" \
+    --hparams_file "logs/SeqLen_{16}_TemDs_{4}_AttenType_{spatial-temporal-joint}_DecoderType_{divided-unshare}_lr/lightning_logs/version_1/hparams.yaml" \
+    --default_root_dir "text2pose_logs" \
+    --max_steps 300000 \
+    --max_frames_num 400 \
+    --gpu_ids "0,1"
+
+
     # --data_path /Dataset/how2sign/video_and_keypoint \
     # --sequence_length 4 \
     # --debug 0

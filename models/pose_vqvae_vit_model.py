@@ -105,6 +105,7 @@ class PoseVitVQVAE(pl.LightningModule):
                 self.upsample[name] = upsample
         else:
             raise ValueError("decoder_type is wrong!")
+        self.save_hyperparameters()
 
     def heuristic_downsample(self, points_feat, token_ids):
         """points_feat: [bs, c, t, v]
@@ -189,8 +190,6 @@ class PoseVitVQVAE(pl.LightningModule):
 
 
     def forward(self, batch, mode):
-        # print("pose: ", batch["pose"].shape)
-
         _, features = self.encode(batch)
         pose_pred, face_pred, rhand_pred, lhand_pred = self.decode(features)
 
@@ -263,8 +262,8 @@ class PoseVitVQVAE(pl.LightningModule):
             ori_vis.append(canvas) # [1, c, h, w]
         ori_vis = torch.cat(ori_vis, dim=0)
         ori_vis = torchvision.utils.make_grid(ori_vis, )
-        self.logger.experiment.add_image("{}/{}".format(mode, name), ori_vis, self.global_step)
-
+        # self.logger.experiment.add_image("{}/{}".format(mode, name), ori_vis, self.global_step)
+        return mode, name, ori_vis
     
     def _tensor2numpy(self, points, anchor, part_name, keypoint_num):
         """[v, c]]
@@ -312,12 +311,12 @@ class PoseVitVQVAE(pl.LightningModule):
 
 
     def configure_optimizers(self):
-        # optimizer = torch.optim.Adam(self.parameters(), lr=3e-4, betas=(0.9, 0.999))
-        # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1, gamma=0.5, last_epoch=-1)
-        # return [optimizer], [scheduler]
+        optimizer = torch.optim.Adam(self.parameters(), lr=3e-4, betas=(0.9, 0.999))
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 3, gamma=0.5, last_epoch=-1)
+        return [optimizer], [scheduler]
 
-        optimizer = torch.optim.Adam(self.parameters(), lr=4e-6, betas=(0.9, 0.999))
-        return [optimizer]
+        # optimizer = torch.optim.Adam(self.parameters(), lr=4e-6, betas=(0.9, 0.999))
+        # return [optimizer]
 
 
     @staticmethod
