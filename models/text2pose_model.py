@@ -118,15 +118,28 @@ class Text2PoseModel(pl.LightningModule):
             rhand = self.vqvae.selects(batch["rhand"], "rhand")[:, :, :vis_len, :]
             lhand = self.vqvae.selects(batch["lhand"], "lhand")[:, :, :vis_len, :]
             self.vis("train", "ori_vis", pose, face, rhand, lhand)
-
             # reconstrction
             pose_recon, face_recon, rhand_recon, lhand_recon = self.vqvae.decode(points_embedding)
+            pose_recon, face_recon = pose_recon[:, :, :vis_len, :], face_recon[:, :, :vis_len, :]
+            rhand_recon, lhand_recon = rhand_recon[:, :, :vis_len, :], lhand_recon[:, :, :vis_len, :]
             self.vis("train", "rec_vis", pose_recon, face_recon, rhand_recon, lhand_recon)
 
             # prediction
-            predictions = torch.argmax(logits, dim=-1)
+            predictions = torch.argmax(logits, dim=-1)[0:1] # [bs, t*v]
+            predictions_np = predictions.detach().cpu().numpy()
+            idx = np.argwhere(predictions_np[0] >= self.points_eos).tolist()
+            if len(idx) > 0:
+                # print("idx: ", idx)
+                idx = idx[0][0]
+                try:
+                    predictions = predictions[:, :idx]
+                except:
+                    print("error idx: ", idx)
+                # print("predictions: ", predictions.shape)
             predictions = self.vqvae.codebook.dictionary_lookup(predictions)
             pose_pred, face_pred, rhand_pred, lhand_pred = self.vqvae.decode(points_embedding)
+            pose_pred, face_pred = pose_pred[:, :, :vis_len, :], face_pred[:, :, :vis_len, :]
+            rhand_pred, lhand_pred = rhand_pred[:, :, :vis_len, :], lhand_pred[:, :, :vis_len, :]
             self.vis("train", "pred_vis", pose_pred, face_pred, rhand_pred, lhand_pred)
         return loss
 

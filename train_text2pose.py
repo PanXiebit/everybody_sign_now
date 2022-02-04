@@ -28,8 +28,7 @@ def main():
     # print(model)
     # exit()
     callbacks = []
-    callbacks.append(ModelCheckpoint(monitor=None, filename='{epoch}-{step}', save_top_k=1))
-    # callbacks.append(CheckpointEveryNSteps(6000, 2))
+    callbacks.append(ModelCheckpoint(monitor="val/loss", filename='{epoch}-{step}', save_top_k=1))
 
     kwargs = dict()
     if opt.gpus > 1:
