@@ -1,0 +1,133 @@
+import torch
+import torch.nn as nn
+from torch import Tensor
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+from modules.transformer.multihead_attention import MultiHeadedAttention
+from modules.transformer.position_encoding import PositionalEncoding
+from modules.transformer.encoder import PositionwiseFeedForward
+import numpy as np
+
+
+def window_subsequent_mask(size, window_size):
+    pos = torch.arange(0, size).unsqueeze(0).repeat(size, 1)
+    right = torch.arange(window_size-1, size, window_size).unsqueeze(1).repeat(1, window_size).view(size, 1)
+    mask = (pos <= right)
+    return mask.unsqueeze(0)
+
+def subsequent_mask(size: int) -> Tensor:
+    mask = np.triu(np.ones((1, size, size)), k=1).astype("uint8")
+    return torch.from_numpy(mask) == 0
+
+class TransformerDecoderLayer(nn.Module):
+    def __init__(
+        self, size: int = 0, ff_size: int = 0, num_heads: int = 0, dropout: float = 0.1
+    ):
+        super(TransformerDecoderLayer, self).__init__()
+        self.size = size
+        self.trg_trg_att = MultiHeadedAttention(num_heads, size, dropout=dropout)
+        self.src_trg_att = MultiHeadedAttention(num_heads, size, dropout=dropout)
+
+        self.feed_forward = PositionwiseFeedForward(
+            input_size=size, ff_size=ff_size, dropout=dropout
+        )
+
+        self.x_layer_norm = nn.LayerNorm(size, eps=1e-6)
+        self.dec_layer_norm = nn.LayerNorm(size, eps=1e-6)
+
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(
+        self,
+        x: Tensor = None,
+        memory: Tensor = None,
+        src_mask: Tensor = None,
+        trg_mask: Tensor = None):
+        # decoder/target self-attention
+        x_norm = self.x_layer_norm(x)
+        h1 = self.trg_trg_att(x_norm, x_norm, x_norm, mask=trg_mask)
+        h1 = self.dropout(h1) + x
+
+        # source-target attention
+        h1_norm = self.dec_layer_norm(h1)
+        h2 = self.src_trg_att(memory, memory, h1_norm, mask=src_mask)
+        o = self.feed_forward(self.dropout(h2) + h1)
+
+        return o
+
+
+class TransformerDecoder(nn.Module):
+    def __init__(
+        self, vocab_size, num_layers, num_heads, hidden_size, ff_size, dropout, emb_dropout):
+        super(TransformerDecoder, self).__init__()
+
+        self._hidden_size = hidden_size
+        self._output_size = vocab_size
+
+        self.layers = nn.ModuleList(
+            [
+                TransformerDecoderLayer(
+                    size=hidden_size,
+                    ff_size=ff_size,
+                    num_heads=num_heads,
+                    dropout=dropout,
+                )
+                for _ in range(num_layers)
+            ]
+        )
+
+        self.pe = PositionalEncoding(hidden_size)
+        self.layer_norm = nn.LayerNorm(hidden_size, eps=1e-6)
+
+        self.emb_dropout = nn.Dropout(p=emb_dropout)
+        self.output_layer = nn.Linear(hidden_size, self._output_size, bias=False)
+
+        self.register_buffer("window_subsequen_mask", window_subsequent_mask(2200, 20))
+
+
+    def forward(self, trg_embed, encoder_output, src_mask, trg_mask, mask_future=True, window_mask_future=True, window_size=None):
+        """x: trg_embed
+        """
+        # assert trg_mask is not None, "trg_mask required for Transformer"
+        x = trg_embed
+        x = self.pe(x)  # add position encoding to word embedding
+        x = self.emb_dropout(x)
+
+        if mask_future:
+            if trg_mask is not None:
+                trg_mask = trg_mask.unsqueeze(1) & subsequent_mask(x.size(1)).bool().to(x.device)
+            else:
+                trg_mask = subsequent_mask(x.size(1)).bool().to(x.device)
+        
+        # if window_mask_future:
+        #     assert window_size is not None
+        #     size = trg_embed.size(1)
+        #     if trg_mask is not None:
+        #         trg_mask = trg_mask.unsqueeze(1) & self.window_subsequen_mask[:, :size, :size].to(x.device)
+        #     else:
+        #         trg_mask = self.window_subsequen_mask[:, :size, :size].to(x.device)
+
+        for layer in self.layers:
+            x = layer(x=x, memory=encoder_output, src_mask=src_mask, trg_mask=trg_mask)
+
+        x = self.layer_norm(x)
+        output = self.output_layer(x)
+
+        return output
+
+if __name__ == "__main__":
+    # trg_embed = torch.randn(5, 10, 512)
+    # encoder_output = torch.randn(5, 18, 512)
+    # src_mask = None
+    # trg_mask = None
+    # m = TransformerDecoder()
+    # o = m(trg_embed, encoder_output, src_mask, trg_mask)
+    # print(o.shape)
+
+    # window mask
+    size = 12
+    window_size = 4
+    mask = window_subsequent_mask(size, window_size)
+    print(mask, mask.shape)
+
+
+    
