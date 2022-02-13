@@ -37,12 +37,7 @@ class TransformerDecoderLayer(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(
-        self,
-        x: Tensor = None,
-        memory: Tensor = None,
-        src_mask: Tensor = None,
-        trg_mask: Tensor = None):
-        # decoder/target self-attention
+        self, x: Tensor = None, memory: Tensor = None, src_mask: Tensor = None, trg_mask: Tensor = None):        # decoder/target self-attention
         x_norm = self.x_layer_norm(x)
         h1 = self.trg_trg_att(x_norm, x_norm, x_norm, mask=trg_mask)
         h1 = self.dropout(h1) + x
@@ -53,6 +48,25 @@ class TransformerDecoderLayer(nn.Module):
         o = self.feed_forward(self.dropout(h2) + h1)
 
         return o
+
+    def forward_fast(
+        self, x: Tensor = None, memory: Tensor = None, src_mask: Tensor = None, trg_mask: Tensor = None, 
+        layer_past_self=None, return_present=True):
+
+        if return_present: assert not self.training
+
+        # decoder/target self-attention
+        x_norm = self.x_layer_norm(x)
+        h1, present_self = self.trg_trg_att.forward_fast(x_norm, x_norm, x_norm, mask=trg_mask, layer_past=layer_past_self)
+        
+        h1 = self.dropout(h1) + x
+
+        # source-target attention
+        h1_norm = self.dec_layer_norm(h1)
+        h2, _ = self.src_trg_att.forward_fast(memory, memory, h1_norm, mask=src_mask, layer_past=None)
+        o = self.feed_forward(self.dropout(h2) + h1)
+
+        return o, present_self
 
 
 class TransformerDecoder(nn.Module):
@@ -98,13 +112,13 @@ class TransformerDecoder(nn.Module):
             else:
                 trg_mask = subsequent_mask(x.size(1)).bool().to(x.device)
         
-        # if window_mask_future:
-        #     assert window_size is not None
-        #     size = trg_embed.size(1)
-        #     if trg_mask is not None:
-        #         trg_mask = trg_mask.unsqueeze(1) & self.window_subsequen_mask[:, :size, :size].to(x.device)
-        #     else:
-        #         trg_mask = self.window_subsequen_mask[:, :size, :size].to(x.device)
+        if window_mask_future:
+            assert window_size is not None
+            size = trg_embed.size(1)
+            if trg_mask is not None:
+                trg_mask = trg_mask.unsqueeze(1) & self.window_subsequen_mask[:, :size, :size].to(x.device)
+            else:
+                trg_mask = self.window_subsequen_mask[:, :size, :size].to(x.device)
 
         for layer in self.layers:
             x = layer(x=x, memory=encoder_output, src_mask=src_mask, trg_mask=trg_mask)
@@ -113,6 +127,38 @@ class TransformerDecoder(nn.Module):
         output = self.output_layer(x)
 
         return output
+
+    def forward_fast(self, trg_embed, encoder_output, src_mask, trg_mask, mask_future=True, window_mask_future=True, window_size=None, 
+                     past_self=None):
+        """x: trg_embed
+        """
+        # inference only
+        assert not self.training
+
+        # assert trg_mask is not None, "trg_mask required for Transformer"
+        x = trg_embed
+        if past_self is not None:
+            past_length = past_self.size(-2)
+            assert past_length is not None
+
+        # TODO: 
+        x = self.pe(x)  # add position encoding to word embedding
+        x = self.emb_dropout(x)
+
+        presents_self = []  # accumulate over layers
+        for i, layer in enumerate(self.layers):
+            x, present_self = layer.forward_fast(x=x, memory=encoder_output, src_mask=src_mask, trg_mask=trg_mask, 
+                layer_past_self=past_self[i, ...] if past_self is not None else None,
+                return_present=True)
+            
+            presents_self.append(present_self)
+
+        x = self.layer_norm(x)
+        output = self.output_layer(x)
+
+        return output, torch.stack(presents_self)
+
+
 
 if __name__ == "__main__":
     # trg_embed = torch.randn(5, 10, 512)

@@ -4,18 +4,22 @@ import torch.nn.functional as F
 
 class MaskPredict(object):
     
-    def __init__(self, decoding_iterations):
+    def __init__(self, decoding_iterations, token_num):
         super().__init__()
-        self.decoding_iterations = decoding_iterations
+        self.iterations = decoding_iterations
+        self.token_num = token_num
     
-    def generate(self, model, encoder_out, tgt_tokens, pad_idx, mask_idx):
-        bsz, seq_len = tgt_tokens.size()
-        pad_mask = tgt_tokens.eq(pad_idx)
+    def generate(self, model, points_emd, pos_emb, word_feat, word_mask, points_mask, past_points_mask, past_self, pad_idx, mask_idx):
+        """points_emd
+        """
+        bsz, seq_len, _ = points_emd.size()
+        pad_mask = ~points_mask
         seq_lens = seq_len - pad_mask.sum(dim=1)
         
         iterations = seq_len if self.iterations is None else self.iterations
         
-        tgt_tokens, token_probs = self.generate_non_autoregressive(model, encoder_out, tgt_tokens)
+        tgt_tokens, token_probs, present_self = self.generate_non_autoregressive(model, points_emd, word_feat, word_mask, past_points_mask, past_self)
+        
         assign_single_value_byte(tgt_tokens, pad_mask, pad_idx)
         assign_single_value_byte(token_probs, pad_mask, 1.0)
         #print("Initialization: ", convert_tokens(tgt_dict, tgt_tokens[0]))
@@ -30,7 +34,16 @@ class MaskPredict(object):
 
             #print("Step: ", counter+1)
             #print("Masking: ", convert_tokens(tgt_dict, tgt_tokens[0]))
-            decoder_out = model.decoder(tgt_tokens, encoder_out)
+            points_emd = model.point_tok_embedding(tgt_tokens, points_mask) + pos_emb
+            decoder_out, present_self = model.decoder.forward_fast(
+                trg_embed=points_emd, 
+                encoder_output=word_feat, 
+                src_mask=word_mask, 
+                trg_mask=past_points_mask, 
+                mask_future=False, 
+                window_mask_future=True, 
+                window_size=self.token_num, 
+                past_self=past_self)
             new_tgt_tokens, new_token_probs, all_token_probs = generate_step_with_prob(decoder_out)
             
             assign_multi_value_long(token_probs, mask_ind, new_token_probs)
@@ -41,12 +54,21 @@ class MaskPredict(object):
             #print("Prediction: ", convert_tokens(tgt_dict, tgt_tokens[0]))
         
         lprobs = token_probs.log().sum(-1)
-        return tgt_tokens, lprobs
+        return tgt_tokens, present_self
     
-    def generate_non_autoregressive(self, model, encoder_out, tgt_tokens):
-        decoder_out = model.decoder(tgt_tokens, encoder_out)
-        tgt_tokens, token_probs, _ = generate_step_with_prob(decoder_out)
-        return tgt_tokens, token_probs
+    def generate_non_autoregressive(self, model, points_emd, word_feat, word_mask, past_points_mask, past_self):
+        logits, present_self = model.decoder.forward_fast(
+                trg_embed=points_emd, 
+                encoder_output=word_feat, 
+                src_mask=word_mask, 
+                trg_mask=past_points_mask, 
+                mask_future=False, 
+                window_mask_future=True, 
+                window_size=self.token_num, 
+                past_self=past_self)
+
+        tgt_tokens, token_probs, _ = generate_step_with_prob(logits)
+        return tgt_tokens, token_probs, present_self
 
     def select_worst(self, token_probs, num_mask):
         bsz, seq_len = token_probs.size()
@@ -62,7 +84,7 @@ def duplicate_encoder_out(encoder_out, bsz, beam_size):
 
 
 def generate_step_with_prob(out):
-    probs = F.softmax(out[0], dim=-1)
+    probs = F.softmax(out, dim=-1)
     max_probs, idx = probs.max(dim=-1)
     return idx, max_probs, probs
 

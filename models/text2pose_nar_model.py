@@ -59,7 +59,7 @@ class Text2PoseModel(pl.LightningModule):
         self.random = np.random.RandomState(seed)
         self.eps = 0.1
 
-        self.decoding_strategy = MaskPredict(decoding_iterations=5)
+        self.decoding_strategy = MaskPredict(decoding_iterations=5, token_num=self.token_num)
 
         self.save_hyperparameters()
 
@@ -131,7 +131,6 @@ class Text2PoseModel(pl.LightningModule):
         points_mask = self._get_mask(points_len, size)
         points_emd = self.point_tok_embedding(points_inp, points_mask)
         point_positions = self.make_point_positions(points_tokens, self.points_pad) # TODO, must be points_tokens, not points_inp 
-
         points_emd = points_emd + self.position_encoding(point_positions) 
         logits = self.decoder(trg_embed=points_emd, encoder_output=word_feat, src_mask=word_mask, trg_mask=points_mask, 
                               mask_future=False, window_mask_future=True, window_size=self.token_num)
@@ -189,9 +188,9 @@ class Text2PoseModel(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         self.forward(batch, "val")
-        # if batch_idx < 10:
-        #     self.inference(batch)
-        #     exit()
+        if batch_idx < 10:
+            self.inference_fast(batch)
+            exit()
 
     def get_lr(self):
         for param_group in self.trainer.optimizers[0].param_groups:
@@ -206,9 +205,8 @@ class Text2PoseModel(pl.LightningModule):
         positions =  (torch.cumsum(mask, dim=1).type_as(mask) * mask)
         return ((positions - 1) // self.token_num + 1).type_as(mask) * mask
 
-    def inference(self, batch):
+    def inference_fast(self, batch):
         self.vqvae.eval()
-
         word_tokens = batch["tokens"].long()
         bsz = word_tokens.size(0)
 
@@ -231,22 +229,56 @@ class Text2PoseModel(pl.LightningModule):
         predict_len = torch.argmax(predicted_lengths_logits, dim=-1) # [bs]
         predict_len[predict_len < 2] = 2
 
-        predict_len = predict_len * self.token_num // 4
-
+        predict_len = predict_len
+        print("predict_len and real len: ", predict_len, batch["points_len"].long())
         max_len = predict_len.max().item()
 
-        length_mask = torch.arange(0, max_len).unsqueeze(0).repeat(bsz, 1).to(predict_len.device) # [bs, max_len]
-        length_mask = (length_mask < predict_len.unsqueeze(1))
+        past_self = None
+        past_points_mask = None
+        res = None
+        for pos in range(1, max_len + 1):
+            print("="*20 + "step: ", pos)
+            print("predict_len: ", predict_len)
+            step_len = self.token_num
 
-        tgt_tokens = word_tokens.new(bsz, max_len).fill_(self.points_mask)
-        tgt_tokens = (1 - length_mask.long()) * tgt_tokens + length_mask.long() * self.points_pad
+            points_mask = predict_len.new(bsz, step_len).fill_(1)
+            points_mask = (points_mask * (pos <= predict_len).unsqueeze_(1)).bool()
 
-        points_emd = self.point_tok_embedding(tgt_tokens, length_mask)
-         
-        predictions = self.decoding_strategy.generate(self, word_feat, points_emd, self.points_pad, self.points_mask)
+            if past_points_mask is None:
+                past_points_mask = points_mask
+            else:
+                past_points_mask = torch.cat([past_points_mask, points_mask], dim =-1)
 
 
+            tgt_tokens = word_tokens.new(bsz, step_len).fill_(self.points_mask)
+            tgt_tokens = (1 - points_mask.long()) * tgt_tokens + points_mask.long() * self.points_pad
 
+            points_emd = self.point_tok_embedding(tgt_tokens, points_mask)
+            point_positions = word_tokens.new(bsz, step_len).fill_(pos)
+            pos_emb = self.position_encoding(point_positions)
+            points_emd = points_emd + pos_emb 
+
+            tgt_tokens, present_self = self.decoding_strategy.generate(self, points_emd, pos_emb, word_feat, word_mask, points_mask, past_points_mask, past_self, self.points_pad, self.points_mask)
+
+            if past_self == None:
+                past_self = present_self
+            else:
+                past_self = torch.cat([past_self, present_self], dim=-2) 
+
+            if res is None:
+                res = tgt_tokens
+            else:
+                res = torch.cat([res, tgt_tokens], dim=-1)
+        print(res.shape)
+        predictions_emb = self.vqvae.codebook.dictionary_lookup(res)
+        print("predictions_emb: ", predictions_emb.shape)
+        predictions_emb = predictions_emb.permute(0, 2, 1).contiguous()
+        predictions_emb = predictions_emb.view(1, 256, -1, 20)
+        exit()
+        pose_recon, face_recon, rhand_recon, lhand_recon = self.vqvae.decode(predictions_emb)
+        self.vis("val", "pred_vis", pose_recon, face_recon, rhand_recon, lhand_recon)
+        exit()
+        return res
 
 
     def vis(self, mode, name, pose, face, rhand, lhand):
