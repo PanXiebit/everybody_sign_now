@@ -1,11 +1,12 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch import Tensor
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 from modules.transformer.position_encoding import PositionalEncoding
-
+from modules.transformer.word_embedding import WordEmbeddings
 
 import math
 import torch
@@ -67,8 +68,12 @@ class TransformerEncoderLayer(nn.Module):
         return o
 
 class TransformerEncoder(nn.Module):
-    def __init__(self, hidden_size, ff_size, num_heads, num_layers, dropout, emb_dropout):
+    def __init__(self, text_dict, max_source_positions, max_target_positions, hidden_size, ff_size, num_heads, num_layers, dropout, emb_dropout):
         super(TransformerEncoder, self).__init__()
+        self.max_source_positions = max_source_positions
+        self.max_target_positions = max_target_positions
+        self.padding_idx=text_dict.pad()
+
         self.layers = nn.ModuleList(
             [
                 TransformerEncoderLayer(
@@ -80,26 +85,43 @@ class TransformerEncoder(nn.Module):
                 for num in range(num_layers)
             ]
         )
+        self.word_embedding = WordEmbeddings(embedding_dim=512, vocab_size=len(text_dict), 
+            pad_idx=text_dict.pad(), num_heads=8, norm_type="batch", activation_type="softsign")
 
         self.layer_norm = nn.LayerNorm(hidden_size, eps=1e-6)
-        self.pe = PositionalEncoding(hidden_size)
+        self.learn_pe = nn.Embedding(self.max_source_positions + self.padding_idx + 1, 512, self.padding_idx)
+        nn.init.normal_(self.learn_pe.weight, mean=0, std=0.02)
+        nn.init.constant_(self.learn_pe.weight[self.padding_idx], 0)
+
+        self.abs_pe = PositionalEncoding(hidden_size)
         self.emb_dropout = nn.Dropout(p=emb_dropout)
 
-        self._output_size = hidden_size
+        # learn prediction
+        self.embed_lengths = nn.Embedding(self.max_target_positions + 1, 512)
+        nn.init.normal_(self.embed_lengths.weight, mean=0, std=0.02)
 
-    # pylint: disable=arguments-differ
-    def forward(self, embed_src, mask):
-        """x: embed_src
+
+    def forward(self, word_tokens, mask):
         """
-        x = embed_src
-        x = self.pe(x)  # add position encoding to word embeddings
+        """
+        x = self.word_embedding(word_tokens, mask)        
+        x = x + self.abs_pe(word_tokens) 
+        # x = x + self.learn_pe(word_tokens)  # add position encoding to word embeddings
         x = self.emb_dropout(x)  # [bs, length, embed_size]
+        len_tokens = self.embed_lengths(word_tokens.new(word_tokens.size(0), 1).fill_(0))
+        x = torch.cat([len_tokens, x], dim=1)
+        mask = torch.cat([mask.new(word_tokens.size(0), 1).fill_(1), mask], dim=1)
 
-        
         for layer in self.layers:
             x = layer(x, mask)
-        return self.layer_norm(x)
+        x = self.layer_norm(x)
+        x = x[:, 1:, :]
+        mask = mask[:, 1:]
 
+        predicted_lengths_logits = torch.matmul(x[:, 0, :], self.embed_lengths.weight.transpose(0, 1)).float()
+        predicted_lengths_logits[:, 0] += float('-inf')   # Cannot predict the len_token
+        predicted_lengths_lprobs = F.log_softmax(predicted_lengths_logits, dim=-1)
+        return x, predicted_lengths_lprobs
 
 if __name__ == "__main__":
     hidden_size = 512

@@ -9,34 +9,33 @@ class MaskPredict(object):
         self.iterations = decoding_iterations
         self.token_num = token_num
     
-    def generate(self, model, points_emd, pos_emb, word_feat, word_mask, points_mask, past_points_mask, past_self, pad_idx, mask_idx):
+    def generate(self, model, trg_tokens, word_feat, word_mask, points_mask, past_points_mask, past_self, pad_idx, mask_idx):
         """points_emd
         """
-        bsz, seq_len, _ = points_emd.size()
+        bsz, seq_len = trg_tokens.size()
         pad_mask = ~points_mask
         seq_lens = seq_len - pad_mask.sum(dim=1)
         
         iterations = seq_len if self.iterations is None else self.iterations
         
-        tgt_tokens, token_probs, present_self = self.generate_non_autoregressive(model, points_emd, word_feat, word_mask, past_points_mask, past_self)
+        trg_tokens, token_probs, present_self = self.generate_non_autoregressive(model, trg_tokens, word_feat, word_mask, past_points_mask, past_self)
         
-        assign_single_value_byte(tgt_tokens, pad_mask, pad_idx)
+        assign_single_value_byte(trg_tokens, pad_mask, pad_idx)
         assign_single_value_byte(token_probs, pad_mask, 1.0)
-        #print("Initialization: ", convert_tokens(tgt_dict, tgt_tokens[0]))
+        #print("Initialization: ", convert_tokens(tgt_dict, trg_tokens[0]))
         
         for counter in range(1, iterations):
             num_mask = (seq_lens.float() * (1.0 - (counter / iterations))).long()
 
             assign_single_value_byte(token_probs, pad_mask, 1.0)
             mask_ind = self.select_worst(token_probs, num_mask)
-            assign_single_value_long(tgt_tokens, mask_ind, mask_idx)
-            assign_single_value_byte(tgt_tokens, pad_mask, pad_idx)
+            assign_single_value_long(trg_tokens, mask_ind, mask_idx)
+            assign_single_value_byte(trg_tokens, pad_mask, pad_idx)
 
             #print("Step: ", counter+1)
-            #print("Masking: ", convert_tokens(tgt_dict, tgt_tokens[0]))
-            points_emd = model.point_tok_embedding(tgt_tokens, points_mask) + pos_emb
+            #print("Masking: ", convert_tokens(tgt_dict, trg_tokens[0]))
             decoder_out, present_self = model.decoder.forward_fast(
-                trg_embed=points_emd, 
+                trg_tokens=trg_tokens, 
                 encoder_output=word_feat, 
                 src_mask=word_mask, 
                 trg_mask=past_points_mask, 
@@ -44,21 +43,21 @@ class MaskPredict(object):
                 window_mask_future=True, 
                 window_size=self.token_num, 
                 past_self=past_self)
-            new_tgt_tokens, new_token_probs, all_token_probs = generate_step_with_prob(decoder_out)
+            new_trg_tokens, new_token_probs, all_token_probs = generate_step_with_prob(decoder_out)
             
             assign_multi_value_long(token_probs, mask_ind, new_token_probs)
             assign_single_value_byte(token_probs, pad_mask, 1.0)
             
-            assign_multi_value_long(tgt_tokens, mask_ind, new_tgt_tokens)
-            assign_single_value_byte(tgt_tokens, pad_mask, pad_idx)
-            #print("Prediction: ", convert_tokens(tgt_dict, tgt_tokens[0]))
+            assign_multi_value_long(trg_tokens, mask_ind, new_trg_tokens)
+            assign_single_value_byte(trg_tokens, pad_mask, pad_idx)
+            #print("Prediction: ", convert_tokens(tgt_dict, trg_tokens[0]))
         
         lprobs = token_probs.log().sum(-1)
-        return tgt_tokens, present_self
+        return trg_tokens, present_self
     
     def generate_non_autoregressive(self, model, points_emd, word_feat, word_mask, past_points_mask, past_self):
         logits, present_self = model.decoder.forward_fast(
-                trg_embed=points_emd, 
+                trg_tokens=points_emd, 
                 encoder_output=word_feat, 
                 src_mask=word_mask, 
                 trg_mask=past_points_mask, 
@@ -67,8 +66,8 @@ class MaskPredict(object):
                 window_size=self.token_num, 
                 past_self=past_self)
 
-        tgt_tokens, token_probs, _ = generate_step_with_prob(logits)
-        return tgt_tokens, token_probs, present_self
+        trg_tokens, token_probs, _ = generate_step_with_prob(logits)
+        return trg_tokens, token_probs, present_self
 
     def select_worst(self, token_probs, num_mask):
         bsz, seq_len = token_probs.size()

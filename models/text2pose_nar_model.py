@@ -13,8 +13,6 @@ import torchvision
 from torchvision.utils import save_image
 from modules.mask_predict import MaskPredict
 from modules.transformer import TransformerEncoder, TransformerDecoder
-from modules.transformer.word_embedding import WordEmbeddings
-from modules.left_to_right import LeftToRight
 import random
 
 
@@ -41,24 +39,22 @@ class Text2PoseModel(pl.LightningModule):
         self.vqvae.codebook._need_init = False
         self.vqvae.eval()
         
-        self.position_encoding = nn.Embedding(max(self.max_source_positions, self.max_target_positions), 512, padding_idx=0)
-        self.word_embedding = WordEmbeddings(embedding_dim=512, vocab_size=len(text_dict), pad_idx=text_dict.pad(), num_heads=8, norm_type="batch", activation_type="softsign",)
-        self.encoder = TransformerEncoder(hidden_size=512, ff_size=2048, num_heads=8, num_layers=6, dropout=0.1, emb_dropout=0.1)
+        max_source_positions, max_target_positions = 400, 400
+        # encoder
+        self.encoder = TransformerEncoder(text_dict, max_source_positions, max_target_positions, 
+            hidden_size=512, ff_size=2048, num_heads=8, num_layers=6, dropout=0.1, emb_dropout=0.1)
 
-        self.embed_lengths = nn.Embedding(self.max_target_positions, 512)
-        nn.init.normal_(self.embed_lengths.weight, mean=0, std=0.02)
-
-
+        # decoder
         self.points_mask = self.vqvae.args.n_codes
         self.points_pad = self.vqvae.args.n_codes + 1
         vocab_size = self.vqvae.args.n_codes + 2
-
-        self.point_tok_embedding = WordEmbeddings(embedding_dim=512, vocab_size=vocab_size, pad_idx=self.points_pad, num_heads=8, norm_type="batch", activation_type="softsign",)
-        self.decoder = TransformerDecoder(vocab_size, num_layers=6, num_heads=8, hidden_size=512, ff_size=2048, dropout=0.1, emb_dropout=0.1)
+        self.decoder = TransformerDecoder(vocab_size, max_target_positions * self.token_num // 4, 
+            self.points_pad, num_layers=6, num_heads=8, hidden_size=512, ff_size=2048, dropout=0.1, emb_dropout=0.1)
 
         self.random = np.random.RandomState(seed)
         self.eps = 0.1
 
+        # inference
         self.decoding_strategy = MaskPredict(decoding_iterations=5, token_num=self.token_num)
 
         self.save_hyperparameters()
@@ -87,25 +83,7 @@ class Text2PoseModel(pl.LightningModule):
         # print("points_len: ", batch["points_len"].long(), points_len)
         word_tokens = batch["tokens"].long()
         word_mask = word_tokens.ne(self.text_dict.pad())
-        word_embed = self.word_embedding(word_tokens, word_mask)
-        word_positions = self.make_positions(word_tokens, self.text_dict.pad())
-        word_embed = word_embed + self.position_encoding(word_positions)
-
-        # add length prediction
-        len_tokens = self.embed_lengths(word_tokens.new(word_tokens.size(0), 1).fill_(0))
-        word_embed = torch.cat([len_tokens, word_embed], dim=1)
-        word_mask = torch.cat([word_mask.new(word_tokens.size(0), 1).fill_(1), word_mask], dim=1)
-
-        word_feat = self.encoder(embed_src=word_embed, mask=word_mask)
-
-        
-        word_feat = word_feat[:, 1:, :]
-        word_mask = word_mask[:, 1:]
-
-
-        predicted_lengths_logits = torch.matmul(word_feat[:, 0, :], self.embed_lengths.weight.transpose(0, 1)).float()
-        predicted_lengths_logits[:, 0] += float('-inf')   # Cannot predict the len_token
-        predicted_lengths_lprobs = F.log_softmax(predicted_lengths_logits, dim=-1)
+        word_feat, predicted_lengths_lprobs = self.encoder(word_tokens=word_tokens, mask=word_mask)
 
         min_num_masks = 1
         bs, _ = points_tokens.size()
@@ -129,10 +107,7 @@ class Text2PoseModel(pl.LightningModule):
         # print("points_len: ", points_len, points_inp.shape)
         size = points_inp.size(1)
         points_mask = self._get_mask(points_len, size)
-        points_emd = self.point_tok_embedding(points_inp, points_mask)
-        point_positions = self.make_point_positions(points_tokens, self.points_pad) # TODO, must be points_tokens, not points_inp 
-        points_emd = points_emd + self.position_encoding(point_positions) 
-        logits = self.decoder(trg_embed=points_emd, encoder_output=word_feat, src_mask=word_mask, trg_mask=points_mask, 
+        logits = self.decoder(trg_tokens=points_inp, encoder_output=word_feat, src_mask=word_mask, trg_mask=points_mask, 
                               mask_future=False, window_mask_future=True, window_size=self.token_num)
 
         # nll loss function
@@ -180,6 +155,7 @@ class Text2PoseModel(pl.LightningModule):
             pose_recon, face_recon = pose_recon[:, :, :vis_len, :], face_recon[:, :, :vis_len, :]
             rhand_recon, lhand_recon = rhand_recon[:, :, :vis_len, :], lhand_recon[:, :, :vis_len, :]
             self.vis("train", "rec_vis", pose_recon, face_recon, rhand_recon, lhand_recon)
+        
         return loss
 
     def training_step(self, batch, batch_idx):
@@ -188,9 +164,8 @@ class Text2PoseModel(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         self.forward(batch, "val")
-        if batch_idx < 10:
+        if batch_idx < 5:
             self.inference_fast(batch)
-            exit()
 
     def get_lr(self):
         for param_group in self.trainer.optimizers[0].param_groups:
@@ -207,38 +182,28 @@ class Text2PoseModel(pl.LightningModule):
 
     def inference_fast(self, batch):
         self.vqvae.eval()
+        vis_len = batch["points_len"].long()[0]
+        pose = self.vqvae.selects(batch["pose"], "pose")[:, :, :vis_len, :]
+        face = self.vqvae.selects(batch["face"], "face")[:, :, :vis_len, :]
+        rhand = self.vqvae.selects(batch["rhand"], "rhand")[:, :, :vis_len, :]
+        lhand = self.vqvae.selects(batch["lhand"], "lhand")[:, :, :vis_len, :]
+        self.vis("val", "ori_vis", pose, face, rhand, lhand)
+
         word_tokens = batch["tokens"].long()
         bsz = word_tokens.size(0)
-
         word_mask = word_tokens.ne(self.text_dict.pad())
-        word_embed = self.word_embedding(word_tokens, word_mask)
 
-        # add length prediction
-        len_tokens = self.embed_lengths(word_tokens.new(word_tokens.size(0), 1).fill_(0))
-        word_embed = torch.cat([len_tokens, word_embed], dim=1)
-        word_mask = torch.cat([word_mask.new(word_tokens.size(0), 1).fill_(1), word_mask], dim=1)
-        word_feat = self.encoder(embed_src=word_embed, mask=word_mask)
-
-        # 
-        word_feat = word_feat[:, 1:, :]
-        word_mask = word_mask[:, 1:]
-
-        predicted_lengths_logits = torch.matmul(word_feat[:, 0, :], self.embed_lengths.weight.transpose(0, 1)).float()
-        predicted_lengths_logits[:, 0] += float('-inf')   # Cannot predict the len_token
-
-        predict_len = torch.argmax(predicted_lengths_logits, dim=-1) # [bs]
+        word_feat, predicted_lengths_probs = self.encoder(word_tokens=word_tokens, mask=word_mask)
+        predict_len = torch.argmax(predicted_lengths_probs, dim=-1) # [bs]
         predict_len[predict_len < 2] = 2
 
         predict_len = predict_len
         print("predict_len and real len: ", predict_len, batch["points_len"].long())
         max_len = predict_len.max().item()
-
         past_self = None
         past_points_mask = None
         res = None
         for pos in range(1, max_len + 1):
-            print("="*20 + "step: ", pos)
-            print("predict_len: ", predict_len)
             step_len = self.token_num
 
             points_mask = predict_len.new(bsz, step_len).fill_(1)
@@ -249,16 +214,10 @@ class Text2PoseModel(pl.LightningModule):
             else:
                 past_points_mask = torch.cat([past_points_mask, points_mask], dim =-1)
 
-
             tgt_tokens = word_tokens.new(bsz, step_len).fill_(self.points_mask)
             tgt_tokens = (1 - points_mask.long()) * tgt_tokens + points_mask.long() * self.points_pad
 
-            points_emd = self.point_tok_embedding(tgt_tokens, points_mask)
-            point_positions = word_tokens.new(bsz, step_len).fill_(pos)
-            pos_emb = self.position_encoding(point_positions)
-            points_emd = points_emd + pos_emb 
-
-            tgt_tokens, present_self = self.decoding_strategy.generate(self, points_emd, pos_emb, word_feat, word_mask, points_mask, past_points_mask, past_self, self.points_pad, self.points_mask)
+            tgt_tokens, present_self = self.decoding_strategy.generate(self, tgt_tokens, word_feat, word_mask, points_mask, past_points_mask, past_self, self.points_pad, self.points_mask)
 
             if past_self == None:
                 past_self = present_self
@@ -269,15 +228,15 @@ class Text2PoseModel(pl.LightningModule):
                 res = tgt_tokens
             else:
                 res = torch.cat([res, tgt_tokens], dim=-1)
-        print(res.shape)
-        predictions_emb = self.vqvae.codebook.dictionary_lookup(res)
-        print("predictions_emb: ", predictions_emb.shape)
-        predictions_emb = predictions_emb.permute(0, 2, 1).contiguous()
-        predictions_emb = predictions_emb.view(1, 256, -1, 20)
-        exit()
-        pose_recon, face_recon, rhand_recon, lhand_recon = self.vqvae.decode(predictions_emb)
-        self.vis("val", "pred_vis", pose_recon, face_recon, rhand_recon, lhand_recon)
-        exit()
+        
+        prediction_vis = res[0:1, :predict_len[0] * self.token_num]
+        if not (prediction_vis >= self.points_mask).any():
+            predictions_emb = self.vqvae.codebook.dictionary_lookup(prediction_vis)
+            predictions_emb = predictions_emb.permute(0, 2, 1).contiguous()
+            predictions_emb = predictions_emb.view(1, 256, -1, 20)
+            
+            pose_pred, face_pred, rhand_pred, lhand_pred = self.vqvae.decode(predictions_emb)
+            self.vis("val", "pred_vis", pose_pred, face_pred, rhand_pred, lhand_pred)
         return res
 
 

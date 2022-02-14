@@ -6,6 +6,7 @@ from modules.transformer.multihead_attention import MultiHeadedAttention
 from modules.transformer.position_encoding import PositionalEncoding
 from modules.transformer.encoder import PositionwiseFeedForward
 import numpy as np
+from modules.transformer.word_embedding import WordEmbeddings
 
 
 def window_subsequent_mask(size, window_size):
@@ -71,9 +72,10 @@ class TransformerDecoderLayer(nn.Module):
 
 class TransformerDecoder(nn.Module):
     def __init__(
-        self, vocab_size, num_layers, num_heads, hidden_size, ff_size, dropout, emb_dropout):
+        self, vocab_size, max_target_positions,  points_pad, num_layers, num_heads, hidden_size, ff_size, dropout, emb_dropout):
         super(TransformerDecoder, self).__init__()
 
+        self.max_target_positions = max_target_positions
         self._hidden_size = hidden_size
         self._output_size = vocab_size
 
@@ -88,8 +90,14 @@ class TransformerDecoder(nn.Module):
                 for _ in range(num_layers)
             ]
         )
+        self.point_tok_embedding = WordEmbeddings(embedding_dim=512, vocab_size=vocab_size, 
+            pad_idx=points_pad, num_heads=8, norm_type="batch", activation_type="softsign",)
 
-        self.pe = PositionalEncoding(hidden_size)
+        self.learn_pe = nn.Embedding(self.max_target_positions + points_pad + 1, 512, points_pad)
+        nn.init.normal_(self.learn_pe.weight, mean=0, std=0.02)
+        nn.init.constant_(self.learn_pe.weight[points_pad], 0)
+
+        self.abs_pe = PositionalEncoding(hidden_size)
         self.layer_norm = nn.LayerNorm(hidden_size, eps=1e-6)
 
         self.emb_dropout = nn.Dropout(p=emb_dropout)
@@ -98,12 +106,14 @@ class TransformerDecoder(nn.Module):
         self.register_buffer("window_subsequen_mask", window_subsequent_mask(2200, 20))
 
 
-    def forward(self, trg_embed, encoder_output, src_mask, trg_mask, mask_future=True, window_mask_future=True, window_size=None):
+    def forward(self, trg_tokens, encoder_output, src_mask, trg_mask, mask_future=True, window_mask_future=True, window_size=None):
         """x: trg_embed
         """
         # assert trg_mask is not None, "trg_mask required for Transformer"
-        x = trg_embed
-        x = self.pe(x)  # add position encoding to word embedding
+        x = self.point_tok_embedding(trg_tokens, trg_mask)
+        x = x + self.abs_pe(trg_tokens) 
+        # x = x + self.learn_pe(trg_tokens)  # add position encoding to word embedding
+
         x = self.emb_dropout(x)
 
         if mask_future:
@@ -114,7 +124,7 @@ class TransformerDecoder(nn.Module):
         
         if window_mask_future:
             assert window_size is not None
-            size = trg_embed.size(1)
+            size = x.size(1)
             if trg_mask is not None:
                 trg_mask = trg_mask.unsqueeze(1) & self.window_subsequen_mask[:, :size, :size].to(x.device)
             else:
@@ -125,10 +135,9 @@ class TransformerDecoder(nn.Module):
 
         x = self.layer_norm(x)
         output = self.output_layer(x)
-
         return output
 
-    def forward_fast(self, trg_embed, encoder_output, src_mask, trg_mask, mask_future=True, window_mask_future=True, window_size=None, 
+    def forward_fast(self, trg_tokens, encoder_output, src_mask, trg_mask, mask_future=True, window_mask_future=True, window_size=None, 
                      past_self=None):
         """x: trg_embed
         """
@@ -136,13 +145,17 @@ class TransformerDecoder(nn.Module):
         assert not self.training
 
         # assert trg_mask is not None, "trg_mask required for Transformer"
-        x = trg_embed
+        x = self.point_tok_embedding(trg_tokens, trg_mask)
+
         if past_self is not None:
             past_length = past_self.size(-2)
             assert past_length is not None
 
-        # TODO: 
-        x = self.pe(x)  # add position encoding to word embedding
+            # TODO:
+            x = x + self.abs_pe(x, past_length)
+        else:
+            x = x + self.abs_pe(x)  # add position encoding to word embedding
+
         x = self.emb_dropout(x)
 
         presents_self = []  # accumulate over layers

@@ -27,9 +27,12 @@ class PositionalEncoding(nn.Module):
         self.register_buffer("pe", pe)
         self.dim = size
 
-    def forward(self, emb):
+    def forward(self, x, past_length=None):
         # Add position encodings
-        return emb + self.pe[:, : emb.size(1)]
+        if past_length is not None:
+            return self.pe[:, :x.size(1)]
+        else:
+            return self.pe[:, past_length:x.size(1)]
 
 
 class LearnedPositionalEmbedding(nn.Module):
