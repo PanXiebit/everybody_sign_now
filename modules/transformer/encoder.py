@@ -13,14 +13,16 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from modules.transformer.multihead_attention import MultiHeadedAttention
+from .utils import gelu, BertLayerNorm, GeLU
+
 
 class PositionwiseFeedForward(nn.Module):
     def __init__(self, input_size, ff_size, dropout=0.1):
         super(PositionwiseFeedForward, self).__init__()
-        self.layer_norm = nn.LayerNorm(input_size, eps=1e-6)
+        self.layer_norm = BertLayerNorm(input_size, eps=1e-6)
         self.pwff_layer = nn.Sequential(
             nn.Linear(input_size, ff_size),
-            nn.ReLU(),
+            GeLU(),
             nn.Dropout(dropout),
             nn.Linear(ff_size, input_size),
             nn.Dropout(dropout),
@@ -49,7 +51,7 @@ class TransformerEncoderLayer(nn.Module):
         """
         super(TransformerEncoderLayer, self).__init__()
 
-        self.layer_norm = nn.LayerNorm(size, eps=1e-6)
+        self.layer_norm = BertLayerNorm(size, eps=1e-6)
            
         self.src_src_att = MultiHeadedAttention(num_heads, size, dropout=dropout)
         self.feed_forward = PositionwiseFeedForward(
@@ -86,9 +88,9 @@ class TransformerEncoder(nn.Module):
             ]
         )
         self.word_embedding = WordEmbeddings(embedding_dim=512, vocab_size=len(text_dict), 
-            pad_idx=text_dict.pad(), num_heads=8, norm_type="batch", activation_type="softsign")
+            pad_idx=text_dict.pad(), num_heads=8, norm_type=None, activation_type=None, scale=True, scale_factor=None)
 
-        self.layer_norm = nn.LayerNorm(hidden_size, eps=1e-6)
+        self.layer_norm = BertLayerNorm(hidden_size, eps=1e-6)
         self.learn_pe = nn.Embedding(self.max_source_positions + self.padding_idx + 1, 512, self.padding_idx)
         nn.init.normal_(self.learn_pe.weight, mean=0, std=0.02)
         nn.init.constant_(self.learn_pe.weight[self.padding_idx], 0)

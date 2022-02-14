@@ -1,4 +1,5 @@
 
+from itertools import count
 import torch
 import torch.nn.functional as F
 
@@ -15,17 +16,23 @@ class MaskPredict(object):
         bsz, seq_len = trg_tokens.size()
         pad_mask = ~points_mask
         seq_lens = seq_len - pad_mask.sum(dim=1)
-        
+        # print("pad_mask: ", pad_mask[:, :15])
+        # print("seq_lens: ", seq_lens)
         iterations = seq_len if self.iterations is None else self.iterations
         
+        # print("before tgt_tokens: ", trg_tokens[:, :15])
         trg_tokens, token_probs, present_self = self.generate_non_autoregressive(model, trg_tokens, word_feat, word_mask, past_points_mask, past_self)
-        
+        # print("after tgt_tokens: ", trg_tokens[:, :15])
         assign_single_value_byte(trg_tokens, pad_mask, pad_idx)
         assign_single_value_byte(token_probs, pad_mask, 1.0)
         #print("Initialization: ", convert_tokens(tgt_dict, trg_tokens[0]))
         
         for counter in range(1, iterations):
+            # print("="*10 + "{}".format(counter) + "="*10)
+            
+
             num_mask = (seq_lens.float() * (1.0 - (counter / iterations))).long()
+            # print("num_mask: ", num_mask)
 
             assign_single_value_byte(token_probs, pad_mask, 1.0)
             mask_ind = self.select_worst(token_probs, num_mask)
@@ -34,6 +41,7 @@ class MaskPredict(object):
 
             #print("Step: ", counter+1)
             #print("Masking: ", convert_tokens(tgt_dict, trg_tokens[0]))
+            # print("before tgt_tokens: ", trg_tokens[:, :15])
             decoder_out, present_self = model.decoder.forward_fast(
                 trg_tokens=trg_tokens, 
                 encoder_output=word_feat, 
@@ -45,13 +53,14 @@ class MaskPredict(object):
                 past_self=past_self)
             new_trg_tokens, new_token_probs, all_token_probs = generate_step_with_prob(decoder_out)
             
+
             assign_multi_value_long(token_probs, mask_ind, new_token_probs)
             assign_single_value_byte(token_probs, pad_mask, 1.0)
             
             assign_multi_value_long(trg_tokens, mask_ind, new_trg_tokens)
             assign_single_value_byte(trg_tokens, pad_mask, pad_idx)
+            # print("after tgt_tokens: ", trg_tokens[:, :15])
             #print("Prediction: ", convert_tokens(tgt_dict, trg_tokens[0]))
-        
         lprobs = token_probs.log().sum(-1)
         return trg_tokens, present_self
     

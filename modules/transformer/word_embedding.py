@@ -75,7 +75,7 @@ def get_activation(activation_type):
 
 
 class WordEmbeddings(nn.Module):
-    def __init__(self, embedding_dim, vocab_size, pad_idx, num_heads, norm_type="batch", activation_type="softsign", scale=False, scale_factor=None):
+    def __init__(self, embedding_dim, vocab_size, pad_idx, num_heads, norm_type=None, activation_type=None, scale=False, scale_factor=None):
         super(WordEmbeddings, self).__init__()
 
         self.embedding_dim = embedding_dim

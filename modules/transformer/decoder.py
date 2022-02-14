@@ -7,6 +7,8 @@ from modules.transformer.position_encoding import PositionalEncoding
 from modules.transformer.encoder import PositionwiseFeedForward
 import numpy as np
 from modules.transformer.word_embedding import WordEmbeddings
+from .utils import BertLayerNorm
+
 
 
 def window_subsequent_mask(size, window_size):
@@ -18,6 +20,7 @@ def window_subsequent_mask(size, window_size):
 def subsequent_mask(size: int) -> Tensor:
     mask = np.triu(np.ones((1, size, size)), k=1).astype("uint8")
     return torch.from_numpy(mask) == 0
+
 
 class TransformerDecoderLayer(nn.Module):
     def __init__(
@@ -32,8 +35,8 @@ class TransformerDecoderLayer(nn.Module):
             input_size=size, ff_size=ff_size, dropout=dropout
         )
 
-        self.x_layer_norm = nn.LayerNorm(size, eps=1e-6)
-        self.dec_layer_norm = nn.LayerNorm(size, eps=1e-6)
+        self.x_layer_norm = BertLayerNorm(size, eps=1e-6)
+        self.dec_layer_norm = BertLayerNorm(size, eps=1e-6)
 
         self.dropout = nn.Dropout(dropout)
 
@@ -91,7 +94,7 @@ class TransformerDecoder(nn.Module):
             ]
         )
         self.point_tok_embedding = WordEmbeddings(embedding_dim=512, vocab_size=vocab_size, 
-            pad_idx=points_pad, num_heads=8, norm_type="batch", activation_type="softsign",)
+            pad_idx=points_pad, num_heads=8, norm_type=None, activation_type=None, scale=False, scale_factor=None)
 
         self.learn_pe = nn.Embedding(self.max_target_positions + points_pad + 1, 512, points_pad)
         nn.init.normal_(self.learn_pe.weight, mean=0, std=0.02)
