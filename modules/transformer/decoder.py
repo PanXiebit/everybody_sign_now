@@ -93,6 +93,9 @@ class TransformerDecoder(nn.Module):
                 for _ in range(num_layers)
             ]
         )
+
+        self.tag_emb = nn.Parameter(torch.randn(4, 1, 512), requires_grad=True)
+
         self.point_tok_embedding = WordEmbeddings(embedding_dim=512, vocab_size=vocab_size, 
             pad_idx=points_pad, num_heads=8, norm_type=None, activation_type=None, scale=False, scale_factor=None)
 
@@ -109,12 +112,25 @@ class TransformerDecoder(nn.Module):
         self.register_buffer("window_subsequen_mask", window_subsequent_mask(2200, 20))
 
 
-    def forward(self, trg_tokens, encoder_output, src_mask, trg_mask, mask_future=True, window_mask_future=True, window_size=None):
+    def forward(self, trg_tokens, encoder_output, src_mask, trg_mask, mask_future=True, window_mask_future=True, window_size=None, tag_name=None):
         """x: trg_embed
         """
         # assert trg_mask is not None, "trg_mask required for Transformer"
+        bsz, tgt_len = trg_tokens.size()
         x = self.point_tok_embedding(trg_tokens, trg_mask)
-        x = x + self.abs_pe(trg_tokens) 
+        x = x + self.abs_pe(trg_tokens)
+        if tag_name is not None:
+            if tag_name == "pose":
+                x = x + self.tag_emb[0].repeat(bsz, tgt_len, 1)
+            elif tag_name == "face":
+                x = x + self.tag_emb[1].repeat(bsz, tgt_len, 1)
+            elif tag_name == "rhand":
+                x = x + self.tag_emb[2].repeat(bsz, tgt_len, 1)
+            elif tag_name == "lhand":
+                x = x + self.tag_emb[3].repeat(bsz, tgt_len, 1)
+            else:
+                raise ValueError("{} is wrong!".format(tag_name))
+
         # x = x + self.learn_pe(trg_tokens)  # add position encoding to word embedding
 
         x = self.emb_dropout(x)

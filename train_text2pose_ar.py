@@ -4,6 +4,7 @@ import pytorch_lightning as pl
 import argparse
 
 from models.text2pose_nar_model import Text2PoseModel
+from models.text2pose_ar_model_separate import Text2PoseModel
 from pytorch_lightning.callbacks import ModelCheckpoint
 from data.sign_text2pose_data import How2SignTextPoseData
 from util.util import CheckpointEveryNSteps

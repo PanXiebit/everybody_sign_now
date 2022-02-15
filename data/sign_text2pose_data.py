@@ -101,18 +101,31 @@ class PoseSentDataset(data.Dataset):
         tokens = self._tokens[idx] # IntTensor
         sent = self._sents[idx]
         keypoint_path = self._key_json_files[idx]
-        keypoint_files = sorted(os.listdir(keypoint_path))[::2]
+        keypoint_files = sorted(os.listdir(keypoint_path))
+        if len(keypoint_files) >= 8:
+            keypoint_files = keypoint_files[::2]
         points = []
         for keypoint_file in keypoint_files:
             posepts, facepts, r_handpts, l_handpts = self.readkeypointsfile_json(os.path.join(keypoint_path, keypoint_file))
             all_keypoints = np.array(posepts + facepts + r_handpts + l_handpts, dtype=np.float32) # 25, 
-            points.append(np.expand_dims(all_keypoints, axis=0))
+            if len(all_keypoints) == 411:
+                points.append(np.expand_dims(all_keypoints, axis=0))
+            else:
+                print("error: ", os.path.join(keypoint_path, keypoint_file))
         keypoints = np.concatenate(points, axis=0)
-        if len(points) > self.max_frames_num:
-            # print("{} frame nums is {}".format(keypoint_path, len(points)))
-            samples = random.sample(list(range(len(points))), self.max_frames_num)
-            samples = sorted(samples)
-            keypoints = keypoints[samples]
+        
+        if len(points) % 4 != 0 or len(points) > self.max_frames_num:
+            if len(points) < 4:
+                # print("keypoints: ", keypoints.shape, keypoint_path)
+                sample_size = 4
+                samples = np.random.choice(list(range(len(points))), sample_size, replace=True)
+                samples = sorted(samples.tolist())
+                keypoints = keypoints[sorted(samples)]
+                # print("keypoints: ", keypoints.shape, keypoint_path)
+            else:
+                sample_size = (len(points) // 4) * 4
+                samples = random.sample(list(range(len(points))), min(sample_size, self.max_frames_num))
+                keypoints = keypoints[sorted(samples)]
         
         pose_anchor = [1]
         pose, pose_no_mask = self._get_x_y_and_normalize(keypoints[:, :75], pose_anchor) # [t, 3v]
