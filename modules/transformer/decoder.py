@@ -75,10 +75,10 @@ class TransformerDecoderLayer(nn.Module):
 
 class TransformerDecoder(nn.Module):
     def __init__(
-        self, vocab_size, max_target_positions,  points_pad, num_layers, num_heads, hidden_size, ff_size, dropout, emb_dropout):
+        self, vocab_size,  points_pad, num_layers, num_heads, hidden_size, ff_size, dropout, emb_dropout):
         super(TransformerDecoder, self).__init__()
 
-        self.max_target_positions = max_target_positions
+        # self.max_target_positions = max_target_positions
         self._hidden_size = hidden_size
         self._output_size = vocab_size
 
@@ -99,9 +99,9 @@ class TransformerDecoder(nn.Module):
         self.point_tok_embedding = WordEmbeddings(embedding_dim=512, vocab_size=vocab_size, 
             pad_idx=points_pad, num_heads=8, norm_type=None, activation_type=None, scale=False, scale_factor=None)
 
-        self.learn_pe = nn.Embedding(self.max_target_positions + points_pad + 1, 512, points_pad)
-        nn.init.normal_(self.learn_pe.weight, mean=0, std=0.02)
-        nn.init.constant_(self.learn_pe.weight[points_pad], 0)
+        # self.learn_pe = nn.Embedding(self.max_target_positions + points_pad + 1, 512, points_pad)
+        # nn.init.normal_(self.learn_pe.weight, mean=0, std=0.02)
+        # nn.init.constant_(self.learn_pe.weight[points_pad], 0)
 
         self.abs_pe = PositionalEncoding(hidden_size)
         self.layer_norm = nn.LayerNorm(hidden_size, eps=1e-6)
@@ -119,6 +119,7 @@ class TransformerDecoder(nn.Module):
         bsz, tgt_len = trg_tokens.size()
         x = self.point_tok_embedding(trg_tokens, trg_mask)
         x = x + self.abs_pe(trg_tokens)
+        
         if tag_name is not None:
             if tag_name == "pose":
                 x = x + self.tag_emb[0].repeat(bsz, tgt_len, 1)

@@ -70,11 +70,11 @@ class TransformerEncoderLayer(nn.Module):
         return o
 
 class TransformerEncoder(nn.Module):
-    def __init__(self, text_dict, max_source_positions, max_target_positions, hidden_size, ff_size, num_heads, num_layers, dropout, emb_dropout):
+    def __init__(self, vocab_size, pad_idx, max_target_positions, hidden_size, ff_size, num_heads, num_layers, dropout, emb_dropout):
         super(TransformerEncoder, self).__init__()
-        self.max_source_positions = max_source_positions
+        # self.max_source_positions = max_source_positions
         self.max_target_positions = max_target_positions
-        self.padding_idx=text_dict.pad()
+        self.padding_idx=pad_idx
 
         self.layers = nn.ModuleList(
             [
@@ -87,13 +87,13 @@ class TransformerEncoder(nn.Module):
                 for num in range(num_layers)
             ]
         )
-        self.word_embedding = WordEmbeddings(embedding_dim=512, vocab_size=len(text_dict), 
-            pad_idx=text_dict.pad(), num_heads=8, norm_type=None, activation_type=None, scale=True, scale_factor=None)
+        self.word_embedding = WordEmbeddings(embedding_dim=512, vocab_size=vocab_size, 
+            pad_idx=pad_idx, num_heads=8, norm_type="batch", activation_type="softsign", scale=True, scale_factor=None)
 
         self.layer_norm = BertLayerNorm(hidden_size, eps=1e-6)
-        self.learn_pe = nn.Embedding(self.max_source_positions + self.padding_idx + 1, 512, self.padding_idx)
-        nn.init.normal_(self.learn_pe.weight, mean=0, std=0.02)
-        nn.init.constant_(self.learn_pe.weight[self.padding_idx], 0)
+        # self.learn_pe = nn.Embedding(self.max_source_positions + self.padding_idx + 1, 512, self.padding_idx)
+        # nn.init.normal_(self.learn_pe.weight, mean=0, std=0.02)
+        # nn.init.constant_(self.learn_pe.weight[self.padding_idx], 0)
 
         self.abs_pe = PositionalEncoding(hidden_size)
         self.emb_dropout = nn.Dropout(p=emb_dropout)
@@ -106,11 +106,18 @@ class TransformerEncoder(nn.Module):
     def forward(self, word_tokens, mask):
         """
         """
-        x = self.word_embedding(word_tokens, mask)        
+        if word_tokens.ndim == 2:
+            x = self.word_embedding(word_tokens, mask)
+        elif word_tokens.ndim == 3:
+            x = torch.matmul(word_tokens, self.word_embedding.embed.weight) # [bs, t, vocab_size] [vocab_size, embed_dim]
+        else:
+            raise ValueError("word_token dim is not 2 or 3!")
+            
         x = x + self.abs_pe(word_tokens) 
+
         # x = x + self.learn_pe(word_tokens)  # add position encoding to word embeddings
         x = self.emb_dropout(x)  # [bs, length, embed_size]
-        len_tokens = self.embed_lengths(word_tokens.new(word_tokens.size(0), 1).fill_(0))
+        len_tokens = self.embed_lengths(word_tokens.new(word_tokens.size(0), 1).long().fill_(0))
         x = torch.cat([len_tokens, x], dim=1)
         mask = torch.cat([mask.new(word_tokens.size(0), 1).fill_(1), mask], dim=1)
 

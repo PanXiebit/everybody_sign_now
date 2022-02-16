@@ -42,14 +42,21 @@ class Text2PoseModel(pl.LightningModule):
         
         max_source_positions, max_target_positions = 400, 400
         # encoder
-        self.encoder = TransformerEncoder(text_dict, max_source_positions, max_target_positions, 
+        self.encoder = TransformerEncoder(len(text_dict), text_dict.pad(), max_target_positions, 
             hidden_size=512, ff_size=2048, num_heads=8, num_layers=6, dropout=0.1, emb_dropout=0.1)
 
         self.points_mask = self.vqvae.args.n_codes # 1024
         self.points_pad = self.vqvae.args.n_codes + 1 # 1025
         vocab_size = self.vqvae.args.n_codes + 2
-        self.decoder = TransformerDecoder(vocab_size, max_target_positions * self.token_num // 4, 
-            self.points_pad, num_layers=6, num_heads=8, hidden_size=512, ff_size=2048, dropout=0.1, emb_dropout=0.1)
+        self.decoder = TransformerDecoder(vocab_size, self.points_pad, num_layers=6, 
+            num_heads=8, hidden_size=512, ff_size=2048, dropout=0.1, emb_dropout=0.1)
+
+        # back-direction
+        self.encoder2 = TransformerEncoder(vocab_size, self.points_pad,  max_source_positions, 
+            hidden_size=512, ff_size=2048, num_heads=8, num_layers=6, dropout=0.1, emb_dropout=0.1)
+
+        self.decoder2 = TransformerDecoder(len(text_dict),  text_dict.pad(), num_layers=6, 
+            num_heads=8, hidden_size=512, ff_size=2048, dropout=0.1, emb_dropout=0.1)
 
         self.random = np.random.RandomState(seed)
         self.eps = 0.1
@@ -99,10 +106,18 @@ class Text2PoseModel(pl.LightningModule):
     def forward(self, batch, mode):
         self.vqvae.eval()
         pose_tokens, face_tokens, rhand_tokens, lhand_tokens, points_embedding = self._points2tokens(batch)
-        points_len = batch["points_len"].long() // 4 * self.token_num
-
+        points_len = batch["points_len"].long() // 4 * self.token_num        
+        word_len = batch["tokens_len"].long()
         word_tokens = batch["tokens"].long()
         bsz, _ = word_tokens.size()
+
+        for i in range(bsz):
+            pose_tokens[i, points_len[i]:] = self.points_pad
+            face_tokens[i, points_len[i]:] = self.points_pad
+            rhand_tokens[i, points_len[i]:] = self.points_pad
+            lhand_tokens[i, points_len[i]:] = self.points_pad
+
+
         word_mask = word_tokens.ne(self.text_dict.pad())
         word_feat, predicted_lengths_lprobs = self.encoder(word_tokens=word_tokens, mask=word_mask)
 
@@ -113,14 +128,31 @@ class Text2PoseModel(pl.LightningModule):
         length_loss = length_loss.sum() / bsz * 0.1
         # pose loss
 
-        pose_loss = self.separate_enc_dec("pose", pose_tokens, points_len, word_feat, word_mask)
-        face_loss = self.separate_enc_dec("face", face_tokens, points_len, word_feat, word_mask)
-        rhand_loss = self.separate_enc_dec("rhand", rhand_tokens, points_len, word_feat, word_mask)
-        lhand_loss = self.separate_enc_dec("lhand", lhand_tokens, points_len, word_feat, word_mask)
+        pose_loss, pose_logits = self.separate_enc_dec("pose", pose_tokens, points_len, word_feat, word_mask, self.points_pad, self.points_mask)
+        face_loss, face_logits = self.separate_enc_dec("face", face_tokens, points_len, word_feat, word_mask, self.points_pad, self.points_mask)
+        rhand_loss, rhand_logits = self.separate_enc_dec("rhand", rhand_tokens, points_len, word_feat, word_mask, self.points_pad, self.points_mask)
+        lhand_loss, lhand_logits = self.separate_enc_dec("lhand", lhand_tokens, points_len, word_feat, word_mask, self.points_pad, self.points_mask)
 
-        loss = length_loss + pose_loss + face_loss + rhand_loss + lhand_loss 
         
-        self.log('{}/loss'.format(mode), loss.detach(), prog_bar=True)
+        # back translation
+        pose_predicts = F.gumbel_softmax(pose_logits, tau=0.1, hard=True)
+        face_predicts = F.gumbel_softmax(face_logits, tau=0.1, hard=True)
+        rhand_predicts = F.gumbel_softmax(rhand_logits, tau=0.1, hard=True)
+        lhand_predicts = F.gumbel_softmax(lhand_logits, tau=0.1, hard=True)
+
+        # print("points_len: ", points_len)
+        points_mask = self._get_mask(points_len, pose_predicts.size(1))
+
+        pose_feat, _ = self.encoder2(word_tokens=pose_predicts, mask=points_mask)
+        face_feat, _ = self.encoder2(word_tokens=face_predicts, mask=points_mask)
+        rhand_feat, _ = self.encoder2(word_tokens=rhand_predicts, mask=points_mask)
+        lhand_feat, _ = self.encoder2(word_tokens=lhand_predicts, mask=points_mask)
+
+        enc_feat = pose_feat + face_feat + rhand_feat + lhand_feat
+
+        word_loss, _ = self.separate_enc_dec(None, word_tokens, word_len, enc_feat, points_mask, self.text_dict.pad(), self.text_dict.mask())
+
+        self.log('{}/word_loss'.format(mode), word_loss.detach(), prog_bar=True)
         self.log('{}/length_loss'.format(mode), length_loss.detach(), prog_bar=True)
         self.log('{}/pose_loss'.format(mode), pose_loss.detach(), prog_bar=True)
         self.log('{}/face_loss'.format(mode), face_loss.detach(), prog_bar=True)
@@ -142,39 +174,47 @@ class Text2PoseModel(pl.LightningModule):
             rhand_recon, lhand_recon = rhand_recon[:, :, :vis_len, :], lhand_recon[:, :, :vis_len, :]
             self.vis("train", "rec_vis", pose_recon, face_recon, rhand_recon, lhand_recon)
         
+        loss = length_loss + pose_loss + face_loss + rhand_loss + lhand_loss + word_loss
+        self.log('{}/loss'.format(mode), loss.detach(), prog_bar=True)
+
+
         return loss
 
-    def separate_enc_dec(self, tag_name, points_tokens, points_len, word_feat, word_mask):  
+    def separate_enc_dec(self, tag_name, tgt_tokens, tgt_len, src_feat, src_mask, pad_idx, mask_idx):  
         min_num_masks = 1
-        bs, _ = points_tokens.size()
-        points_inp = points_tokens.clone()
-        points_tgt_cp = points_tokens.clone()
-        points_tgt = torch.ones_like(points_tokens).to(points_tokens.device) * self.points_pad
+
+        bs, _ = tgt_tokens.size()
+        tgt_inp = tgt_tokens.clone()
+        tgt_cp = tgt_tokens.clone()
+        tgt_out = torch.ones_like(tgt_tokens).to(tgt_tokens.device) * pad_idx
 
         for i in range(bs):
-            length = points_len[i].cpu().item()
-            points_tokens[i, length:] = self.points_pad
-
+            length = tgt_len[i].cpu().item()
+            
             sample_size = self.random.randint(min_num_masks, length)
             ind = self.random.choice(length, size=sample_size, replace=False)
-            points_inp[i, ind] = self.points_mask
-            points_tgt[i, ind] = points_tgt_cp[i, ind]
+            tgt_inp[i, ind] = mask_idx
+            tgt_out[i, ind] = tgt_cp[i, ind]
         
-        # print("points_tokens: ", points_tokens.shape, points_tokens[:2,:10])
-        # print("points_inp: ", points_inp.shape, points_inp[:2, :10])
-        # print("points_tgt: ", points_tgt.shape, points_tgt[:2, :10])
+        # print("tgt_tokens: ", tgt_tokens.shape, tgt_tokens[:2,:10])
+        # print("tgt_inp: ", tgt_inp.shape, tgt_inp[:2, :10])
+        # print("tgt_tgt: ", tgt_tgt.shape, tgt_tgt[:2, :10])
         
-        # print("points_len: ", points_len, points_inp.shape)
-        size = points_inp.size(1)
-        points_mask = self._get_mask(points_len, size)
-        logits = self.decoder(trg_tokens=points_inp, encoder_output=word_feat, src_mask=word_mask, trg_mask=points_mask, 
-                              mask_future=False, window_mask_future=False, window_size=self.token_num, tag_name=tag_name)
+        # print("tgt_len: ", tgt_len, tgt_inp.shape)
+        size = tgt_inp.size(1)
+        tgt_mask = self._get_mask(tgt_len, size)
+        if tag_name is not None:
+            logits = self.decoder(trg_tokens=tgt_inp, encoder_output=src_feat, src_mask=src_mask, trg_mask=tgt_mask, 
+                                mask_future=False, window_mask_future=False, window_size=self.token_num, tag_name=tag_name)
+        else:
+            logits = self.decoder2(trg_tokens=tgt_inp, encoder_output=src_feat, src_mask=src_mask, trg_mask=tgt_mask, 
+                                mask_future=False, window_mask_future=False, window_size=self.token_num, tag_name=None)
 
         # nll loss function
         lprobs = F.log_softmax(logits, dim=-1)
         lprobs = lprobs.view(-1, lprobs.size(-1)) 
-        target = points_tgt.view(-1, 1)
-        non_pad_mask = target.ne(self.points_pad)
+        target = tgt_out.view(-1, 1)
+        non_pad_mask = target.ne(pad_idx)
         nll_loss = -lprobs.gather(dim=-1, index=target)[non_pad_mask]
         smooth_loss = -lprobs.sum(dim=-1, keepdim=True)[non_pad_mask]
 
@@ -187,11 +227,12 @@ class Text2PoseModel(pl.LightningModule):
 
         eps_i = self.eps / lprobs.size(-1)
         loss = (1. - self.eps) * nll_loss + eps_i * smooth_loss
-        return loss
+        return loss, logits
 
     def training_step(self, batch, batch_idx):
-        loss = self.forward(batch, "train")
-        return loss
+        with torch.autograd.set_detect_anomaly(True):
+            loss = self.forward(batch, "train")
+            return loss
 
     def validation_step(self, batch, batch_idx):
         self.forward(batch, "val")
