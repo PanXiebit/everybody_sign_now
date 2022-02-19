@@ -94,9 +94,9 @@ class TransformerDecoder(nn.Module):
             ]
         )
 
-        self.tag_emb = nn.Parameter(torch.randn(4, 1, 512), requires_grad=True)
+        self.tag_emb = nn.Parameter(torch.randn(4, 1, hidden_size), requires_grad=True)
 
-        self.point_tok_embedding = WordEmbeddings(embedding_dim=512, vocab_size=vocab_size, 
+        self.point_tok_embedding = WordEmbeddings(embedding_dim=hidden_size//5, vocab_size=vocab_size, 
             pad_idx=points_pad, num_heads=8, norm_type=None, activation_type=None, scale=False, scale_factor=None)
 
         # self.learn_pe = nn.Embedding(self.max_target_positions + points_pad + 1, 512, points_pad)
@@ -107,7 +107,7 @@ class TransformerDecoder(nn.Module):
         self.layer_norm = nn.LayerNorm(hidden_size, eps=1e-6)
 
         self.emb_dropout = nn.Dropout(p=emb_dropout)
-        self.output_layer = nn.Linear(hidden_size, self._output_size, bias=False)
+        self.output_layer = nn.Linear(hidden_size//5, self._output_size, bias=False)
 
         self.register_buffer("window_subsequen_mask", window_subsequent_mask(2200, 20))
 
@@ -116,23 +116,32 @@ class TransformerDecoder(nn.Module):
         """x: trg_embed
         """
         # assert trg_mask is not None, "trg_mask required for Transformer"
-        bsz, tgt_len = trg_tokens.size()
-        x = self.point_tok_embedding(trg_tokens, trg_mask)
-        x = x + self.abs_pe(trg_tokens)
+        # print("trg_tokens: ", trg_tokens.shape)
+        if trg_tokens.ndim == 2:
+            bsz, tgt_len = trg_tokens.size()
+            x = self.point_tok_embedding(trg_tokens, trg_mask)
+        elif trg_tokens.ndim == 3:
+            # print("the decoder input is embeded!")
+            bsz, tgt_len, _ = trg_tokens.size()
+            x = trg_tokens
+        else:
+            raise ValueError("word_token dim is not 2 or 3!")
         
+        x = x.view(bsz, tgt_len // 5, 5, -1).view(bsz, tgt_len //5, -1)
+        x = x + self.abs_pe(x)
+        # print("x: ", x.shape)
+
         if tag_name is not None:
             if tag_name == "pose":
-                x = x + self.tag_emb[0].repeat(bsz, tgt_len, 1)
+                x = x + self.tag_emb[0].repeat(bsz, tgt_len//5, 1)
             elif tag_name == "face":
-                x = x + self.tag_emb[1].repeat(bsz, tgt_len, 1)
+                x = x + self.tag_emb[1].repeat(bsz, tgt_len//5, 1)
             elif tag_name == "rhand":
-                x = x + self.tag_emb[2].repeat(bsz, tgt_len, 1)
+                x = x + self.tag_emb[2].repeat(bsz, tgt_len//5, 1)
             elif tag_name == "lhand":
-                x = x + self.tag_emb[3].repeat(bsz, tgt_len, 1)
+                x = x + self.tag_emb[3].repeat(bsz, tgt_len//5, 1)
             else:
                 raise ValueError("{} is wrong!".format(tag_name))
-
-        # x = x + self.learn_pe(trg_tokens)  # add position encoding to word embedding
 
         x = self.emb_dropout(x)
 
@@ -154,8 +163,12 @@ class TransformerDecoder(nn.Module):
             x = layer(x=x, memory=encoder_output, src_mask=src_mask, trg_mask=trg_mask)
 
         x = self.layer_norm(x)
-        output = self.output_layer(x)
-        return output
+        x = x.view(bsz, tgt_len//5, 5, -1).contiguous().view(bsz, tgt_len, -1)
+        # print("out x: ", x.shape)
+        x = self.output_layer(x)
+        # print("out x: ", x.shape)
+        # exit()
+        return x
 
     def forward_fast(self, trg_tokens, encoder_output, src_mask, trg_mask, mask_future=True, window_mask_future=True, window_size=None, 
                      past_self=None):

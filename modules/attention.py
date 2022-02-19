@@ -70,3 +70,10 @@ class Attention(nn.Module):
         out = torch.matmul(attn, v)
         out = rearrange(out, 'b h n d -> b n (h d)')
         return self.to_out(out)
+
+
+if __name__ == "__main__":
+    m = Transformer(256, 3, 4, 256//4, 256*4, 0.1)
+    x = torch.randn(2, 288, 256)
+    x = m(x)
+    print(x.shape)

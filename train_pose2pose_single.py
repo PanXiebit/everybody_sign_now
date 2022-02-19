@@ -4,7 +4,7 @@ from configs.train_options import TrainOptions
 import pytorch_lightning as pl
 import argparse
 
-from models.pose_vqvae_model import PoseVQVAE
+from models.pose_vqvae_adaptive_model import PoseVitVQVAE
 from pytorch_lightning.callbacks import ModelCheckpoint
 from data.sign_pose2pose_data import How2SignPoseData, PoseDataset
 from util.util import CheckpointEveryNSteps
@@ -15,7 +15,7 @@ from pytorch_lightning.loggers import NeptuneLogger
 def main():
     pl.seed_everything(1234)
     parser = argparse.ArgumentParser()
-    parser = PoseVQVAE.add_model_specific_args(parser)
+    parser = PoseVitVQVAE.add_model_specific_args(parser)
     parser = pl.Trainer.add_argparse_args(parser)
     opt = TrainOptions(parser).parse()
     # print(opt)
@@ -25,7 +25,7 @@ def main():
     data = How2SignPoseData(opt)
     data.train_dataloader()
     data.test_dataloader()
-    model = PoseVQVAE(opt)
+    model = PoseVitVQVAE(opt)
     # model = model.load_from_checkpoint("lightning_logs/seqlen_16_with_anchor/checkpoints/epoch=1-step=2249.ckpt", 
     #     hparams_file="lightning_logs/seqlen_16_with_anchor//hparams.yaml")
     

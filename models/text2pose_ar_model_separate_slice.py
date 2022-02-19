@@ -43,13 +43,13 @@ class Text2PoseModel(pl.LightningModule):
         max_source_positions, max_target_positions = 400, 400
         # encoder
         self.encoder = TransformerEncoder(len(text_dict), text_dict.pad(), max_target_positions, 
-            hidden_size=512, ff_size=2048, num_heads=8, num_layers=6, dropout=0.1, emb_dropout=0.1)
+            hidden_size=640, ff_size=1280, num_heads=8, num_layers=6, dropout=0.1, emb_dropout=0.1)
 
         self.points_mask = self.vqvae.args.n_codes # 1024
         self.points_pad = self.vqvae.args.n_codes + 1 # 1025
         vocab_size = self.vqvae.args.n_codes + 2
         self.decoder = TransformerDecoder(vocab_size, self.points_pad, num_layers=6, 
-            num_heads=8, hidden_size=512, ff_size=2048, dropout=0.1, emb_dropout=0.1)
+            num_heads=8, hidden_size=640, ff_size=1280, dropout=0.1, emb_dropout=0.1)
 
         self.random = np.random.RandomState(seed)
         self.eps = 0.1
@@ -98,8 +98,13 @@ class Text2PoseModel(pl.LightningModule):
         
     def forward(self, batch, mode):
         self.vqvae.eval()
+        # print("pose: ", batch["pose"].shape)
+        # print("pose_len: ", batch["points_len"].long())
+
         pose_tokens, face_tokens, rhand_tokens, lhand_tokens, points_embedding = self._points2tokens(batch)
-        points_len = batch["points_len"].long() // 4 * self.token_num
+        # print("pose_tokens: ", pose_tokens.shape)
+
+        points_len = batch["points_len"].long() * self.token_num
 
         word_tokens = batch["tokens"].long()
         bsz, _ = word_tokens.size()
@@ -152,6 +157,7 @@ class Text2PoseModel(pl.LightningModule):
         tgt_cp = tgt_tokens.clone()
         tgt_out = torch.ones_like(tgt_tokens).to(tgt_tokens.device) * pad_idx
 
+        # print("tgt_len: ", tgt_len)
         for i in range(bs):
             length = tgt_len[i].cpu().item()
             if tag_name is not None: tgt_tokens[i, length:] = pad_idx
@@ -162,18 +168,18 @@ class Text2PoseModel(pl.LightningModule):
         
         # print("tgt_tokens: ", tgt_tokens.shape, tgt_tokens[:2,:10])
         # print("tgt_inp: ", tgt_inp.shape, tgt_inp[:2, :10])
-        # print("tgt_tgt: ", tgt_tgt.shape, tgt_tgt[:2, :10])
+        # print("tgt_tgt: ", tgt_out.shape, tgt_out[:2, :10])
         
         # print("tgt_len: ", tgt_len, tgt_inp.shape)
-        size = tgt_inp.size(1)
-        tgt_mask = self._get_mask(tgt_len, size)
-        if tag_name is not None:
-            logits = self.decoder(trg_tokens=tgt_inp, encoder_output=src_feat, src_mask=src_mask, trg_mask=tgt_mask, 
-                                mask_future=False, window_mask_future=False, window_size=self.token_num, tag_name=tag_name)
-        else:
-            logits = self.decoder2(trg_tokens=tgt_inp, encoder_output=src_feat, src_mask=src_mask, trg_mask=tgt_mask, 
-                                mask_future=False, window_mask_future=False, window_size=self.token_num, tag_name=None)
-
+        size = max(tgt_len//5)
+        tgt_mask = self._get_mask(tgt_len//5, size)
+        # print("tgt_len: ", tgt_len//5)
+        # print("tgt_mask: ", tgt_mask.shape)
+        
+        logits = self.decoder(trg_tokens=tgt_inp, encoder_output=src_feat, src_mask=src_mask, trg_mask=tgt_mask, 
+                            mask_future=False, window_mask_future=False, window_size=self.token_num, tag_name=tag_name)
+        # print("logits: ", logits.shape)
+        # exit()
         # nll loss function
         lprobs = F.log_softmax(logits, dim=-1)
         lprobs = lprobs.view(-1, lprobs.size(-1)) 
@@ -221,7 +227,7 @@ class Text2PoseModel(pl.LightningModule):
         self.vqvae.eval()
         word_tokens = batch["tokens"].long()
         bsz = word_tokens.size(0)
-        for id in range(4):
+        for id in range(bsz):
             vis_len = batch["points_len"].long()[id]
             pose = self.vqvae.selects(batch["pose"], "pose")[id:id+1, :, :vis_len, :]
             face = self.vqvae.selects(batch["face"], "face")[id:id+1, :, :vis_len, :]
@@ -233,24 +239,30 @@ class Text2PoseModel(pl.LightningModule):
         # print("word_tokens: ", word_tokens[:, :10])
         word_feat, predicted_lengths_probs = self.encoder(word_tokens=word_tokens, mask=word_mask)
         predict_len = torch.argmax(predicted_lengths_probs, dim=-1) # [bs]
-        predict_len[predict_len < 4] = 4
+        predict_len[predict_len < 2] = 2
 
-        predict_len = predict_len // 4 * self.token_num 
-        print("predict_len and real length: ", predict_len, batch["points_len"].long() // 4 * self.token_num)
+        
+        predict_len = predict_len * self.token_num 
+        print("predict_len and real length: ", predict_len, batch["points_len"].long())
 
         max_len = predict_len.max().item()
 
         init_mask = torch.arange(max_len).unsqueeze_(0).repeat(bsz, 1).to(predict_len.device)
         init_mask = (init_mask < (predict_len).unsqueeze(1)).bool()
+        
         init_tokens = word_tokens.new(bsz, max_len).fill_(self.points_mask)
         init_tokens = (1 - init_mask.long()) * init_tokens + init_mask.long() * self.points_pad
 
-        pose_tokens = self.decoding_strategy.generate_separate(self, "pose", init_tokens, word_feat, word_mask, init_mask, self.points_pad, self.points_mask)
-        face_tokens = self.decoding_strategy.generate_separate(self, "face", init_tokens, word_feat, word_mask, init_mask, self.points_pad, self.points_mask)
-        rhand_tokens = self.decoding_strategy.generate_separate(self, "rhand", init_tokens, word_feat, word_mask, init_mask, self.points_pad, self.points_mask)
-        lhand_tokens = self.decoding_strategy.generate_separate(self, "lhand", init_tokens, word_feat, word_mask, init_mask, self.points_pad, self.points_mask)
+        tgt_mask = torch.arange(max_len//5).unsqueeze_(0).repeat(bsz, 1).to(predict_len.device)
+        tgt_mask = (tgt_mask < (predict_len//5).unsqueeze(1)).bool()
         
-        for idx in range(4):
+        # print("infer dec: ", init_tokens.shape, word_feat.shape, word_mask.shape, tgt_mask.shape)
+        pose_tokens = self.decoding_strategy.generate_separate(self, "pose", init_tokens, word_feat, word_mask, tgt_mask, self.points_pad, self.points_mask)
+        face_tokens = self.decoding_strategy.generate_separate(self, "face", init_tokens, word_feat, word_mask, tgt_mask, self.points_pad, self.points_mask)
+        rhand_tokens = self.decoding_strategy.generate_separate(self, "rhand", init_tokens, word_feat, word_mask, tgt_mask, self.points_pad, self.points_mask)
+        lhand_tokens = self.decoding_strategy.generate_separate(self, "lhand", init_tokens, word_feat, word_mask, tgt_mask, self.points_pad, self.points_mask)
+        
+        for idx in range(bsz):
             pose_tokens_vis = pose_tokens[idx:idx+1, :predict_len[idx]].contiguous().view(1, -1, self.token_num)
             face_tokens_vis = face_tokens[idx:idx+1, :predict_len[idx]].contiguous().view(1, -1, self.token_num)
             rhand_tokens_vis = rhand_tokens[idx:idx+1, :predict_len[idx]].contiguous().view(1, -1, self.token_num)
@@ -268,7 +280,7 @@ class Text2PoseModel(pl.LightningModule):
                 self.vis("val", "pred_vis_{}".format(idx), pose_pred, face_pred, rhand_pred, lhand_pred)
 
     def vis(self, mode, name, pose, face, rhand, lhand):
-        mode, name, ori_vis = self.vqvae.visualization(mode, name, pose, face, rhand, lhand)
+        mode, name, ori_vis = self.vqvae.visualization(mode, name, pose, face, rhand, lhand, log=False)
         self.logger.experiment.add_image("{}/{}".format(mode, name), ori_vis, self.global_step)
 
 

@@ -103,7 +103,7 @@ class PoseSentDataset(data.Dataset):
         keypoint_path = self._key_json_files[idx]
         keypoint_files = sorted(os.listdir(keypoint_path))
         if len(keypoint_files) >= 8:
-            keypoint_files = keypoint_files[::2]
+            keypoint_files = keypoint_files[::4] # TODO, sample rate
         points = []
         for keypoint_file in keypoint_files:
             posepts, facepts, r_handpts, l_handpts = self.readkeypointsfile_json(os.path.join(keypoint_path, keypoint_file))

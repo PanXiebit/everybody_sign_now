@@ -13,7 +13,7 @@ python -m train_pose2pose \
     --temporal_downsample ${temporal_downsample} \
     --atten_type ${atten_type} \
     --decoder_type ${decoder_type} \
-    --default_root_dir "logs/SeqLen_{${sequence_length}}_TemDs_{${temporal_downsample}}_AttenType_{${atten_type}}_DecoderType_{${decoder_type}}_lr" \
+    --default_root_dir "logs/SeqLen_{${sequence_length}}_TemDs_{${temporal_downsample}}_AttenType_{${atten_type}}_DecoderType_{${decoder_type}}" \
     --debug 0 \
     --gpu_ids "0,1"
 

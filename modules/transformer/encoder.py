@@ -87,7 +87,7 @@ class TransformerEncoder(nn.Module):
                 for num in range(num_layers)
             ]
         )
-        self.word_embedding = WordEmbeddings(embedding_dim=512, vocab_size=vocab_size, 
+        self.word_embedding = WordEmbeddings(embedding_dim=hidden_size, vocab_size=vocab_size, 
             pad_idx=pad_idx, num_heads=8, norm_type="batch", activation_type="softsign", scale=True, scale_factor=None)
 
         self.layer_norm = BertLayerNorm(hidden_size, eps=1e-6)
@@ -99,7 +99,7 @@ class TransformerEncoder(nn.Module):
         self.emb_dropout = nn.Dropout(p=emb_dropout)
 
         # learn prediction
-        self.embed_lengths = nn.Embedding(self.max_target_positions + 1, 512)
+        self.embed_lengths = nn.Embedding(self.max_target_positions + 1, hidden_size)
         nn.init.normal_(self.embed_lengths.weight, mean=0, std=0.02)
 
 
@@ -109,7 +109,8 @@ class TransformerEncoder(nn.Module):
         if word_tokens.ndim == 2:
             x = self.word_embedding(word_tokens, mask)
         elif word_tokens.ndim == 3:
-            x = torch.matmul(word_tokens, self.word_embedding.embed.weight) # [bs, t, vocab_size] [vocab_size, embed_dim]
+            x = word_tokens
+            # print("the encoder input is embeded!")
         else:
             raise ValueError("word_token dim is not 2 or 3!")
             

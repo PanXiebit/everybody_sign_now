@@ -420,7 +420,8 @@ def renderface_sparse(facepts, canvas, numkeypoints, disp=False, threshold = 0.2
 	if avecons < threshold:
 		return canvas
 
-	pointlist = [27, 30, 8, 0, 16, 33, 68, 69] #sparse 8 default
+	# pointlist = [27, 30, 8, 0, 16, 33, 68, 69] #sparse 8 default
+	pointlist = list(range(0, 70, 3))  #sparse 8 default
 	if numkeypoints == 22:
 		pointlist = [27, 30, 8, 0, 16, 31, 33, 35, \
 					68, 69, 36, 39, 42, 45, 17, 21, 22, 26, 48, 51, 54, 57] #endpoints

@@ -80,7 +80,7 @@ class PoseDataset(data.Dataset):
             clips = []
             for keypoint_path in tqdm(key_json_paths):
                 if sequence_length >= 4:
-                    keypoint_files = sorted(os.listdir(keypoint_path))[::2]
+                    keypoint_files = sorted(os.listdir(keypoint_path))[::4] # TODO!
                 else:
                     keypoint_files = sorted(os.listdir(keypoint_path))[::8]
                 clip_data = []
