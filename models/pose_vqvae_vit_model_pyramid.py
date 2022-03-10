@@ -15,8 +15,7 @@ import cv2
 from modules.attention import Transformer
 from modules.nearby_attn import AttnBlock
 from modules.vq_fn import Codebook
-# from modules.vq_fn_2 import DVQEmbedding
-
+import einops
 
 
 def zero(x):
@@ -32,95 +31,97 @@ class PoseVitVQVAE(pl.LightningModule):
 
         self.args = args
         
-        self.linear_emb = nn.Linear(100, 256)
-
-        self.tokens = {}
-        self.tokens["pose"] = list(range(8)) # 8
-        self.tokens["rhand"] = list(range(21)) # 21
-        self.tokens["lhand"] = list(range(21)) # 21
+        self.linear_emb = nn.Linear(100, 512)
 
         # downsample
-        self.points_downsample = nn.ModuleList()
-        n_times_downsample = 2
-        for i in range(n_times_downsample):
-            conv = SamePadConv2d(256, 256, 4, stride=(1,2))
-            self.points_downsample.append(conv)
+        # step 1
+        self.sp1_pose_conv1 = nn.Conv2d(2, 16, kernel_size=(1,4), stride=(1,4))
+        self.sp1_pose_conv2 = nn.Conv2d(2, 16, kernel_size=1, stride=1)
+
+        self.sp1_hand_conv1 = nn.Conv2d(2, 16, kernel_size=(1,3), stride=(1,3))
+        self.sp1_hand_conv2 = nn.Conv2d(2, 16, kernel_size=1, stride=1)
+
+        # step 2
+        self.sp2_pose_conv1  = nn.Conv2d(16, 64, kernel_size=(1,3), stride=(1,3))
+        self.sp2_pose_conv2  = nn.Conv2d(16, 64, kernel_size=1, stride=1)
+
+        self.sp2_hand_conv1  = nn.Conv2d(16, 64, kernel_size=(1,2), stride=(1,2))
+        self.sp2_hand_conv2  = nn.Conv2d(16, 64, kernel_size=1, stride=1)
+
+        # step 3
+        self.sp3_conv1 = nn.Conv2d(64, 256, kernel_size=(1, 6), stride=(1,6))
+        self.sp3_conv2 = nn.Conv2d(64, 256, kernel_size=1, stride=1)
         
-        # transformer
-        # spatial-temporal attention
-        if args.atten_type == "spatial-temporal-joint":
-            self.st_transformer = Transformer(dim=256, depth=3, heads=4, dim_head=64, mlp_dim=1024)
-        elif args.atten_type == "spatial-temporal-divided":
-            self.s_transformer = Transformer(dim=256, depth=3, heads=4, dim_head=64, mlp_dim=1024)
-            self.t_transformer = Transformer(dim=256, depth=3, heads=4, dim_head=64, mlp_dim=1024)
-        elif args.atten_type == "spatial-only":
-            self.s_transformer = Transformer(dim=256, depth=3, heads=4, dim_head=64, mlp_dim=1024)
-        else:
-            raise ValueError("attn_type is wrong!")
+        # step 4
+        self.sp4_conv1 = nn.Conv2d(256, 512, kernel_size=(1, 3), stride=(1,3))
 
-        self.pre_vq_conv = SamePadConv2d(256, 256, 1)
-        self.post_vq_conv = SamePadConv2d(256, 256, 1)
-        self.codebook = Codebook(args.n_codes, args.embedding_dim)
-        # self.codebook = DVQEmbedding(4, args.n_codes, args.embedding_dim, ema=True)
 
-        if args.temporal_downsample == 4:
-                us_kernels = [4,4]
-                up_steps = [2,2]
-        elif args.temporal_downsample == 2:
-            us_kernels = [1,4]
-            up_steps = [1,2]
-        elif args.temporal_downsample == 1:
-            us_kernels = [1,1]
-            up_steps = [1,1]
-
-        if self.args.decoder_type == "joint":
-            self.upsample = nn.Sequential(
-                nn.ConvTranspose2d(256, 256, kernel_size=(1, 5), stride=1), 
-                SamePadConvTranspose2d(256, 128, kernel_size=(us_kernels[0], 4), stride=(up_steps[0], 2)),
-                SamePadConvTranspose2d(128, 64, kernel_size=(us_kernels[1], 4), stride=(up_steps[1], 2)),
-                nn.ConvTranspose2d(64, 2, kernel_size=(1,5), stride=1)
-            )
-        elif self.args.decoder_type == "divided":
-            self.upsample = nn.Sequential(
-                nn.ConvTranspose2d(256, 256, kernel_size=(1, 2), stride=1), 
-                SamePadConvTranspose2d(256, 128, kernel_size=(us_kernels[0], 4), stride=(up_steps[0], 2)),
-                SamePadConvTranspose2d(128, 64, kernel_size=(us_kernels[1], 4), stride=(up_steps[1], 2)),
-                nn.ConvTranspose2d(64, 2, kernel_size=(1,2), stride=1)
-            )
-        elif self.args.decoder_type == "divided-unshare":
-
-            upsample = nn.Sequential(
-                nn.ConvTranspose2d(256, 256, kernel_size=(1, 2), stride=1), 
-                SamePadConvTranspose2d(256, 128, kernel_size=(us_kernels[0], 4), stride=(up_steps[0], 2)),
-                SamePadConvTranspose2d(128, 64, kernel_size=(us_kernels[1], 4), stride=(up_steps[1], 2)),
-                nn.ConvTranspose2d(64, 2, kernel_size=(1,2), stride=1)
-            )
-            self.upsample = nn.ModuleDict()
-            for name in ["pose", "face", "rhand", "lhand"]:
-                self.upsample[name] = upsample
-        else:
-            raise ValueError("decoder_type is wrong!")
+        self.vit = 
+        # upsample
+        
         self.save_hyperparameters()
 
-    def heuristic_downsample(self, points_feat, token_ids):
-        """points_feat: [bs, c, t, v]
-        """
-        out_feat = []
-        for ids in token_ids:
-            part_feat = points_feat[:, :, :, ids] # [bs, c, t, 5]
-            for conv in self.points_downsample:
-                part_feat = conv(part_feat)
-            out_feat.append(part_feat)
-        out_feat = torch.cat(out_feat, dim=-1) 
-        return out_feat
 
+    def heuristic_downsample(self, pose, rhand, lhand):
+        # step1:
+        sp1_pose1 = self.sp1_pose_conv1(pose[..., [0,1,2,5]]) # [bs, 16, t, 1]
+        sp1_pose2 = self.sp1_pose_conv2(pose[..., [3,4,6,7]]) # [bs, 16, t, 4]
+
+        sp1_rhand1 = self.sp1_hand_conv1(rhand[..., [2,3,4]])
+        sp1_rhand2 = self.sp1_hand_conv1(rhand[..., [6,7,8]])
+        sp1_rhand3 = self.sp1_hand_conv1(rhand[..., [10,11,12]])
+        sp1_rhand4 = self.sp1_hand_conv1(rhand[..., [14,15,16]])
+        sp1_rhand5 = self.sp1_hand_conv1(rhand[..., [18,19,20]])
+        sp1_rhand6 = self.sp1_hand_conv2(rhand[..., [0,1,5,9,13,17]])
+        
+
+        sp1_lhand1 = self.sp1_hand_conv1(lhand[..., [2,3,4]]) # 2
+        sp1_lhand2 = self.sp1_hand_conv1(lhand[..., [6,7,8]]) # 6
+        sp1_lhand3 = self.sp1_hand_conv1(lhand[..., [10,11,12]]) # 10
+        sp1_lhand4 = self.sp1_hand_conv1(lhand[..., [14,15,16]]) # 14
+        sp1_lhand5 = self.sp1_hand_conv1(lhand[..., [18,19,20]]) # 18
+        sp1_lhand6 = self.sp1_hand_conv2(lhand[..., [0,1,5,9,13,17]])  # [0,1,5,9,13,17]
+
+        # step2
+
+        sp2_pose1 = self.sp2_pose_conv1(torch.cat([sp1_pose1, sp1_pose2[..., [0,2]]], dim=-1)) # (0,1,2,5),3,6
+        sp2_pose2 = self.sp2_pose_conv2(sp1_pose2[..., [1,3]])  # [4, 7]
+
+        sp2_rhand1 = self.sp2_hand_conv1(torch.cat([sp1_rhand1, sp1_rhand6[..., 1:2]], dim=-1)) # (2,3,4), 1
+        sp2_rhand2 = self.sp2_hand_conv1(torch.cat([sp1_rhand2, sp1_rhand6[..., 2:3]], dim=-1)) # (6,7,8), 5
+        sp2_rhand3 = self.sp2_hand_conv1(torch.cat([sp1_rhand3, sp1_rhand6[..., 3:4]], dim=-1)) # (10,11,12), 9
+        sp2_rhand4 = self.sp2_hand_conv1(torch.cat([sp1_rhand4, sp1_rhand6[..., 4:5]], dim=-1)) # (14,15,16), 13
+        sp2_rhand5 = self.sp2_hand_conv1(torch.cat([sp1_rhand5, sp1_rhand6[..., 5:6]], dim=-1)) # (18,19,20), 17
+
+        sp2_lhand1 = self.sp2_hand_conv1(torch.cat([sp1_lhand1, sp1_lhand6[..., 1:2]], dim=-1)) # (2,3,4), 1
+        sp2_lhand2 = self.sp2_hand_conv1(torch.cat([sp1_lhand2, sp1_lhand6[..., 2:3]], dim=-1)) # (6,7,8), 5
+        sp2_lhand3 = self.sp2_hand_conv1(torch.cat([sp1_lhand3, sp1_lhand6[..., 3:4]], dim=-1)) # (10,11,12), 9
+        sp2_lhand4 = self.sp2_hand_conv1(torch.cat([sp1_lhand4, sp1_lhand6[..., 4:5]], dim=-1)) # (14,15,16), 13
+        sp2_lhand5 = self.sp2_hand_conv1(torch.cat([sp1_lhand5, sp1_lhand6[..., 5:6]], dim=-1)) # (18,19,20), 17
+        
+        # step 3
+        sp3_rhand = torch.cat([sp2_pose2[..., 0:1], sp2_rhand1, sp2_rhand2, sp2_rhand3, sp2_rhand4, sp2_rhand5], dim=-1)
+        sp3_rhand = self.sp3_conv1(sp3_rhand)
+        sp3_lhand = torch.cat([sp2_pose2[..., 1:2], sp2_lhand1, sp2_lhand2, sp2_lhand3, sp2_lhand4, sp2_lhand5], dim=-1)
+        sp3_lhand = self.sp3_conv1(sp3_lhand)
+        sp3_pose = self.sp3_conv2(sp2_pose1)
+
+        # step 4
+        sp4_point = torch.cat([sp3_rhand, sp3_pose, sp3_rhand], dim=-1)
+        sp4_point = self.sp4_conv1(sp4_point)
+
+        return sp4_point
 
     def encode(self, batch):
-        pose = batch["pose"]
+        pose = batch["pose"][..., list(range(8))]
         rhand = batch["rhand"]
         lhand = batch["lhand"]
-        print(pose.shape, rhand.shape, lhand.shape)
-        exit()
+        
+        # points = torch.cat([pose, rhand, lhand], dim=-1) # [bs, 2, t, V]
+        # print("points: ", points.shape)
+        pose_feat = self.heuristic_downsample(pose, rhand, lhand)
+        
+
         face_feat = self.encoder["face"](batch["face"])
         rhand_feat = self.encoder["hand"](batch["rhand"])
         lhand_feat = self.encoder["hand"](batch["lhand"])
@@ -159,21 +160,21 @@ class PoseVitVQVAE(pl.LightningModule):
     def decode(self, feat):
         feat = self.post_vq_conv(feat)
         if self.args.decoder_type == "divided":
-            pose_pred = self.upsample(feat[..., 0:5])
-            face_pred = self.upsample(feat[..., 5:10])
-            rhand_pred = self.upsample(feat[..., 10:15])
-            lhand_pred = self.upsample(feat[..., 15:20])
+            pose_pred = self.upsample(feat[...,  0:5])
+            face_pred = self.upsample(feat[...,  5:10])
+            rhand_pred = self.upsample(feat[...,  10:15])
+            lhand_pred = self.upsample(feat[...,  15:20])
         elif self.args.decoder_type == "joint":
             predictions = self.upsample(feat)
-            pose_pred = predictions[..., 0:25]
-            face_pred = predictions[..., 25:50]
-            rhand_pred = predictions[..., 50:75]
-            lhand_pred = predictions[..., 75:100]
+            pose_pred = predictions[...,  0:25]
+            face_pred = predictions[...,  25:50]
+            rhand_pred = predictions[...,  50:75]
+            lhand_pred = predictions[...,  75:100]
         elif self.args.decoder_type == "divided-unshare":
-            pose_pred = self.upsample["pose"](feat[..., 0:5])
-            face_pred = self.upsample["face"](feat[..., 5:10])
-            rhand_pred = self.upsample["rhand"](feat[..., 10:15])
-            lhand_pred = self.upsample["lhand"](feat[..., 15:20])
+            pose_pred = self.upsample["pose"](feat[...,  0:5])
+            face_pred = self.upsample["face"](feat[...,  5:10])
+            rhand_pred = self.upsample["rhand"](feat[...,  10:15])
+            lhand_pred = self.upsample["lhand"](feat[...,  15:20])
         else:
             raise ValueError("decoder_type is wrong!")
         # print(pose_pred.shape, face_pred.shape, rhand_pred.shape, lhand_pred.shape)
@@ -183,7 +184,7 @@ class PoseVitVQVAE(pl.LightningModule):
     def selects(self, x, part_name):
         origin = []
         for ids in self.tokens[part_name]:
-            cur = x[:, :, :, ids] # [bs, c, t, 5]
+            cur = x[..., ids] # [bs, c, t, 5]
             origin.append(cur)
         return torch.cat(origin, dim=-1)
 
