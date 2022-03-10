@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.distributed as dist
 import torch
 from torch.autograd import Function
+import torch.nn.functional as F
 
 
 class VectorQuantization(Function):
@@ -109,19 +110,8 @@ class VQEmbedding(nn.Module):
             self.register_buffer('running_size', torch.zeros(K))
             self.register_buffer('running_sum', self.embedding.weight.detach())
 
-    def forward(self, z_e_x, mode=""):
-        if mode == "":
-            z_e_x_ = z_e_x.permute(0, 2, 3, 1).contiguous()
-            latents = vq(z_e_x_, self.embedding.weight)
-            return latents
-        elif mode == "st":
-            return self._straight_through(z_e_x)
-        elif mode == "emb":
-            return self.embedding(z_e_x)
-        else:
-            raise ValueError
-
-    def _straight_through(self, z_e_x):
+    def forward(self, z_e_x):
+        bsz, hid, h, t = z_e_x.size()
         z_e_x_ = z_e_x.permute(0, 2, 3, 1).contiguous()
         z_q_x_, indices = vq_st(z_e_x_, self.embedding.weight.detach())
         z_q_x = z_q_x_.permute(0, 3, 1, 2).contiguous()
@@ -150,9 +140,14 @@ class VQEmbedding(nn.Module):
         z_q_x_bar_flatten = torch.index_select(self.embedding.weight,
                                                dim=0, index=indices)
         z_q_x_bar_ = z_q_x_bar_flatten.view_as(z_e_x_)
-        z_q_x_bar = z_q_x_bar_.permute(0, 3, 1, 2).contiguous()
 
-        return z_q_x, z_q_x_bar
+
+        
+
+        z_q_x_bar = z_q_x_bar_.permute(0, 3, 1, 2).contiguous()
+        commitment_loss = 0.25 * F.mse_loss(z_e_x, z_q_x_bar.detach())
+
+        return indices.view(bsz, h, t), z_q_x_bar, commitment_loss
 
 
 class DVQEmbedding(nn.Module):
@@ -163,32 +158,33 @@ class DVQEmbedding(nn.Module):
         self.D = D
         self.ve = nn.ModuleList([VQEmbedding(K, D // num, ema) for i in range(num)])
 
-    def forward(self, z_e_x, mode=""):
+    def forward(self, z_e_x):
         assert z_e_x.dim() == 4
-        if mode == "":
-            latents = []
-            for i, part in enumerate(z_e_x.split(self.D // self.num, dim=1)):
-                latents.append(self.ve[i](part))
-            return torch.stack(latents, dim=1)
-        elif mode == "st":
-            r1 = []
-            r2 = []
-            for i, part in enumerate(z_e_x.split(self.D // self.num, dim=1)):
-                z_q_x_st, z_q_x = self.ve[i]._straight_through(part)
-                r1.append(z_q_x_st)
-                r2.append(z_q_x)
-            return torch.cat(r1, dim=1), torch.cat(r2, dim=1)
-        elif mode == "emb":
-            result = []
-            for i in range(self.num):
-                # latents = z_e_x
-                result.append(self.ve[i].embedding(z_e_x[:, i, ...]))
-            return torch.cat(result, dim=-1)
-        else:
-            raise ValueError
+
+        r1 = []
+        r2 = []
+        commit_loss = 0
+        for i, part in enumerate(z_e_x.split(self.D // self.num, dim=1)):
+            indices, z_q_x, com_loss = self.ve[i](part)
+            r1.append(indices.unsqueeze(1))
+            r2.append(z_q_x)
+            commit_loss += com_loss
+        encoding_indices = torch.cat(r1, dim=1)
+        embeddings_st = torch.cat(r2, dim=1)
+        commitment_loss = commit_loss
+        return dict(embeddings=embeddings_st, encodings=encoding_indices,
+                    commitment_loss=commitment_loss)
+
 
 if __name__ == "__main__":
+    # codebook = VQEmbedding(1024, 256, ema=True)
+    # x = torch.randn(5, 256, 10, 10)
+    # x = codebook(x)
+    # # print(x)
+    # print(x[0].shape, x[1].shape)
+
     codebook = DVQEmbedding(4, 1024, 256, ema=True)
     x = torch.randn(5, 256, 10, 10)
     x = codebook(x)
-    print(x.shape)
+    # print(x)
+    print(x[0].shape, x[1].shape, x[2])

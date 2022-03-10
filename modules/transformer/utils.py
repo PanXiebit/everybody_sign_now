@@ -37,7 +37,18 @@ class BertLayerNorm(nn.Module):
 
 
 if __name__ == "__main__":
-    gelu = GeLU()
-    x = torch.randn(2,3)
-    x = gelu(x)
-    print(x)
+    def window_subsequent_mask(size, window_size):
+        pos = torch.arange(0, size).unsqueeze(0).repeat(size, 1)
+        right = torch.arange(window_size-1, size, window_size).unsqueeze(1).repeat(1, window_size).view(size, 1)
+        mask = (pos <= right)
+        return mask.unsqueeze(0)
+
+    def delay_subsequent_mask(size, teacher_len):
+        pos = torch.arange(0, size).unsqueeze(0).repeat(size, 1)
+        left = (torch.arange(0, size) - teacher_len).unsqueeze(1)
+        mask = (pos <= left).long() + torch.eye(size).long()
+        return mask.unsqueeze(0)
+    
+    mask = delay_subsequent_mask(15, 4)
+    print(mask)
+

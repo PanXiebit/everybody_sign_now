@@ -15,7 +15,6 @@ import cv2
 from modules.attention import Transformer
 from modules.nearby_attn import AttnBlock
 from modules.vq_fn import Codebook
-# from modules.vq_fn_2 import DVQEmbedding
 
 
 def zero(x):
@@ -23,7 +22,6 @@ def zero(x):
 
 def iden(x):
     return x
-
 
 class PoseVitVQVAE(pl.LightningModule):
     def __init__(self, args):
@@ -45,9 +43,9 @@ class PoseVitVQVAE(pl.LightningModule):
 
         self.tokens = {}
         self.tokens["pose"] = [[17,15,0,16,18], [0,1,9,8,12], [4,3,2,1,5], [2,1,5,6,7], [3,2,1,5,6]] # 25
+        self.tokens["face"] = [[0,2,4,6,8], [8,10,12,14,16], [17,18,19,20,21], [22,23,24,25,26], [27,28,29,30,33]] # 25
         self.tokens["rhand"] = [[0,1,2,3,4], [0,5,6,7,8], [0,9,10,11,12], [0,13,14,15,16], [0,17,18,19,20]] # 25
         self.tokens["lhand"] = [[0,1,2,3,4], [0,5,6,7,8], [0,9,10,11,12], [0,13,14,15,16], [0,17,18,19,20]] # 25
-        self.tokens["face"] = [[0,2,4,6,8], [8,10,12,14,16], [17,18,19,20,21], [22,23,24,25,26], [27,28,29,30,33]] # 25
 
         # downsample
         self.points_downsample = nn.ModuleList()
@@ -70,7 +68,8 @@ class PoseVitVQVAE(pl.LightningModule):
 
         self.pre_vq_conv = SamePadConv2d(256, 256, 1)
         self.post_vq_conv = SamePadConv2d(256, 256, 1)
-        self.codebook = Codebook(args.n_codes, args.embedding_dim)
+        self.codebooks = nn.ModuleList([Codebook(args.n_codes, args.embedding_dim) for _ in range(20)])
+        
         # self.codebook = DVQEmbedding(4, args.n_codes, args.embedding_dim, ema=True)
 
         if args.temporal_downsample == 4:
@@ -121,7 +120,7 @@ class PoseVitVQVAE(pl.LightningModule):
             for conv in self.points_downsample:
                 part_feat = conv(part_feat)
             out_feat.append(part_feat)
-        out_feat = torch.cat(out_feat, dim=-1) 
+        out_feat = torch.cat(out_feat, dim=-1)
         return out_feat
 
 
@@ -158,9 +157,22 @@ class PoseVitVQVAE(pl.LightningModule):
             feat = feat.view(bs, t, v, h).permute(0, 3, 1, 2).contiguous() # [bs, h, t, v]
         else:
             raise ValueError("attn_type is wrong!")
+        feat = self.pre_vq_conv(feat)
+        assert feat.size(-1) == len(self.codebooks)
 
-        vq_output = self.codebook(self.pre_vq_conv(feat))
-        return vq_output['encodings'], vq_output['embeddings'], vq_output["commitment_loss"]
+        encodings = []
+        embeddings = []
+        commitment_loss = 0.
+        for i, codebook in enumerate(self.codebooks):
+            vq_output = codebook(feat[:, :, :, i:i+1])
+            encodings.append(vq_output['encodings'] + i * self.args.n_codes)
+            embeddings.append(vq_output['embeddings'])
+            commitment_loss += vq_output["commitment_loss"]
+        # print(encodings[0].shape, embeddings[0].shape, commitment_loss)
+        encodings = torch.cat(encodings, dim=-1)
+        embeddings = torch.cat(embeddings, dim=-1)
+        commitment_loss /= 20.
+        return encodings, embeddings, commitment_loss
 
     def decode(self, feat):
         feat = self.post_vq_conv(feat)

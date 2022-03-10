@@ -18,6 +18,7 @@ from modules.vq_fn import Codebook
 # from modules.vq_fn_2 import DVQEmbedding
 
 
+
 def zero(x):
     return 0
 
@@ -30,24 +31,13 @@ class PoseVitVQVAE(pl.LightningModule):
         super().__init__()
 
         self.args = args
-
-        if args.temporal_downsample == 4:
-            ds_kernels = [2,2]
-        elif args.temporal_downsample == 2:
-            ds_kernels = [1,2]
-        elif args.temporal_downsample == 1:
-            ds_kernels = [1,1]
         
-        self.encoder = nn.ModuleDict()
-        self.encoder["pose"] = ST_GCN_18(in_channels=2, ds_kernels=ds_kernels, graph_cfg={'layout':'pose25', 'strategy':'spatial'})
-        self.encoder["face"] = ST_GCN_18(in_channels=2, ds_kernels=ds_kernels, graph_cfg={'layout':'face70', 'strategy':'spatial'})
-        self.encoder["hand"] = ST_GCN_18(in_channels=2, ds_kernels=ds_kernels, graph_cfg={'layout':'hand21', 'strategy':'spatial'})
+        self.linear_emb = nn.Linear(100, 256)
 
         self.tokens = {}
-        self.tokens["pose"] = [[17,15,0,16,18], [0,1,9,8,12], [4,3,2,1,5], [2,1,5,6,7], [3,2,1,5,6]] # 25
-        self.tokens["rhand"] = [[0,1,2,3,4], [0,5,6,7,8], [0,9,10,11,12], [0,13,14,15,16], [0,17,18,19,20]] # 25
-        self.tokens["lhand"] = [[0,1,2,3,4], [0,5,6,7,8], [0,9,10,11,12], [0,13,14,15,16], [0,17,18,19,20]] # 25
-        self.tokens["face"] = [[0,2,4,6,8], [8,10,12,14,16], [17,18,19,20,21], [22,23,24,25,26], [27,28,29,30,33]] # 25
+        self.tokens["pose"] = list(range(8)) # 8
+        self.tokens["rhand"] = list(range(21)) # 21
+        self.tokens["lhand"] = list(range(21)) # 21
 
         # downsample
         self.points_downsample = nn.ModuleList()
@@ -126,7 +116,11 @@ class PoseVitVQVAE(pl.LightningModule):
 
 
     def encode(self, batch):
-        pose_feat = self.encoder["pose"](batch["pose"])
+        pose = batch["pose"]
+        rhand = batch["rhand"]
+        lhand = batch["lhand"]
+        print(pose.shape, rhand.shape, lhand.shape)
+        exit()
         face_feat = self.encoder["face"](batch["face"])
         rhand_feat = self.encoder["hand"](batch["rhand"])
         lhand_feat = self.encoder["hand"](batch["lhand"])

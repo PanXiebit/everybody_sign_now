@@ -91,9 +91,6 @@ class TransformerEncoder(nn.Module):
             pad_idx=pad_idx, num_heads=8, norm_type="batch", activation_type="softsign", scale=True, scale_factor=None)
 
         self.layer_norm = BertLayerNorm(hidden_size, eps=1e-6)
-        # self.learn_pe = nn.Embedding(self.max_source_positions + self.padding_idx + 1, 512, self.padding_idx)
-        # nn.init.normal_(self.learn_pe.weight, mean=0, std=0.02)
-        # nn.init.constant_(self.learn_pe.weight[self.padding_idx], 0)
 
         self.abs_pe = PositionalEncoding(hidden_size)
         self.emb_dropout = nn.Dropout(p=emb_dropout)
@@ -116,7 +113,6 @@ class TransformerEncoder(nn.Module):
             
         x = x + self.abs_pe(word_tokens) 
 
-        # x = x + self.learn_pe(word_tokens)  # add position encoding to word embeddings
         x = self.emb_dropout(x)  # [bs, length, embed_size]
         len_tokens = self.embed_lengths(word_tokens.new(word_tokens.size(0), 1).long().fill_(0))
         x = torch.cat([len_tokens, x], dim=1)
@@ -125,13 +121,14 @@ class TransformerEncoder(nn.Module):
         for layer in self.layers:
             x = layer(x, mask)
         x = self.layer_norm(x)
-        x = x[:, 1:, :]
-        mask = mask[:, 1:]
+        enc_output = x[:, 1:, :]
+        src_mask = mask[:, 1:]
 
-        predicted_lengths_logits = torch.matmul(x[:, 0, :], self.embed_lengths.weight.transpose(0, 1)).float()
+        length_emd = x[:, 0, :]
+        predicted_lengths_logits = torch.matmul(length_emd, self.embed_lengths.weight.transpose(0, 1)).float()
         predicted_lengths_logits[:, 0] += float('-inf')   # Cannot predict the len_token
         predicted_lengths_lprobs = F.log_softmax(predicted_lengths_logits, dim=-1)
-        return x, predicted_lengths_lprobs
+        return enc_output, predicted_lengths_lprobs, src_mask
 
 if __name__ == "__main__":
     hidden_size = 512

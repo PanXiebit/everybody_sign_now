@@ -156,23 +156,24 @@ class Dictionary(object):
         vocab = defaultdict(int)
         with open(tokenized_sent_path, "r") as f:
             for line in f:
-                words = line.strip().split()
+                words = line.strip().lower().split()
                 for word in words:
                     vocab[word] += 1
 
         sort_vocab = sorted(vocab.items(), key=lambda item: item[1], reverse=True)
-        print("vocabulary size: ", len(vocab))
+        print("vocabulary size: {}, load from {}".format(len(vocab), tokenized_sent_path))
         # print(len(vocab), sort_vocab[-100:]) # bpe iters: 20000 vocab_size=14051, bpe iters: 10000 vocab_size=9252, no bpe vocab_size=16389
         with open(vocab_file, "w") as f:
             for (word, cnt) in sort_vocab:
                 f.write(word + " " + str(cnt) + "\n")
 
 if __name__ == "__main__":
-    tokenized_sent_path = "data/text2gloss/how2sign.train.pre.en"
+    # tokenized_sent_path = "data/text2gloss/how2sign.train.pre.en"
+    tokenized_sent_path = "data/text2gloss/how2sign.train.norm.tok.en"
     # tokenized_sent_path = "data/text2gloss/how2sign.train.norm.tok.clean.tc.en"
     vocab_file = "data/text2gloss/how2sign_vocab.txt"
     vocabulary = Dictionary()
-    # vocabulary._save_vocab_file(tokenized_sent_path, vocab_file)
+    vocabulary._save_vocab_file(tokenized_sent_path, vocab_file)
     vocabulary = vocabulary.load(vocab_file)
 
     print(len(vocabulary))
