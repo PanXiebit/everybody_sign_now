@@ -6,7 +6,7 @@ import argparse
 
 from models.pose_vqvae_vit_model_pyramid import PoseVitVQVAE
 from pytorch_lightning.callbacks import ModelCheckpoint
-from data.sign_pose2pose_data import How2SignPoseData, PoseDataset
+from data.sign_pose2pose_data_shift import How2SignPoseData, PoseDataset
 from util.util import CheckpointEveryNSteps
 import os
 from pytorch_lightning.loggers import NeptuneLogger

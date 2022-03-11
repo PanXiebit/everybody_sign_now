@@ -56,7 +56,7 @@ class PoseVitVQVAE(pl.LightningModule):
         self.sp4_conv1 = nn.Conv2d(256, 512, kernel_size=(1, 3), stride=(1,3))
 
 
-        self.vit = 
+        # self.vit = 
         # upsample
         
         self.save_hyperparameters()
@@ -109,7 +109,8 @@ class PoseVitVQVAE(pl.LightningModule):
         # step 4
         sp4_point = torch.cat([sp3_rhand, sp3_pose, sp3_rhand], dim=-1)
         sp4_point = self.sp4_conv1(sp4_point)
-
+        print("sp4_point: ", sp4_point.shape)
+        exit()
         return sp4_point
 
     def encode(self, batch):
