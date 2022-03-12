@@ -108,7 +108,7 @@ class PoseVitVQVAE(pl.LightningModule):
         sp3_pose = self.sp3_conv2(sp2_pose1)
 
         # step 4
-        sp4_point = torch.cat([sp3_rhand, sp3_pose, sp3_rhand], dim=-1)
+        sp4_point = torch.cat([sp3_rhand, sp3_pose, sp3_lhand], dim=-1)
         sp4_point = self.sp4_conv1(sp4_point)
         
         return sp4_point.squeeze(-1)
@@ -134,14 +134,12 @@ class PoseVitVQVAE(pl.LightningModule):
         sp3_rhand = self.sp3_transconv1(sp4_feat[:, :, :, 0:1]) # b c t, 6
         sp3_pose = self.sp3_transconv2(sp4_feat[:, :, :, 1:2]) # b c t, 1
         sp3_lhand = self.sp3_transconv1(sp4_feat[:, :, :, 2:3]) # b c t, 6
-        # print("step3: ", sp3_rhand.shape, sp3_pose.shape, sp3_lhand.shape)
 
         # step 2
         sp2_rhand = self.sp2_hand_transconv1(sp3_rhand[..., 1:6]) # [b, c, t 10]
         sp2_lhand = self.sp2_hand_transconv1(sp3_lhand[..., 1:6]) # [b, c, t 10]
         sp2_pose1 = self.sp2_pose_transconv1(sp3_pose) # [b, c, t, 3]
         sp2_pose2 = self.sp2_pose_transconv2(torch.cat([sp3_rhand[..., 0:1], sp3_lhand[..., 0:1]], dim=-1)) # [bs, c, t, 2], [4,7]
-        # print("step2: ", sp2_rhand.shape, sp2_lhand.shape, sp2_pose1.shape, sp2_pose2.shape)
 
         # step 1
         sp1_pose1 = self.sp1_pose_transconv1(sp2_pose1[..., 1:2]) # [b, c, t, 4] node for (0,1,2,5)
@@ -153,7 +151,6 @@ class PoseVitVQVAE(pl.LightningModule):
         sp1_lhand1 = self.sp1_hand_transconv1(sp2_lhand[..., [1,3,5,7,9]]) # [b, c, t, 15] (2,3,4, 6,7,8, 10,11,12, 14,15,16, 18,19,20)
         sp1_lhand2 = self.sp1_hand_transconv2(sp2_lhand[..., [0,2,4,6,8]]) # [b ,c, t, 5]
 
-        # print(sp1_pose1.shape, sp1_pose2.shape, sp1_rhand1.shape, sp1_rhand2.shape, sp1_lhand1.shape, sp1_lhand2.shape)
         
         dec_pose = torch.cat([sp1_pose1, sp1_pose2], dim=-1) # 0,1,2,5,3,6,4,7
         dec_rhand = torch.cat([sp1_rhand1, sp1_rhand2], dim=-1) # 2,3,4, 6,7,8, 10,11,12, 14,15,16, 18,19,20, 1, 5, 9, 13, 17
@@ -176,7 +173,6 @@ class PoseVitVQVAE(pl.LightningModule):
         dec_pose = dec_pose[..., pose_idx] # [b, c, t, 8]
         dec_rhand = torch.cat([dec_rhand[..., hand_idx], dec_pose[..., 4:5]], dim=-1) # [b, c, t, 21]
         dec_lhand = torch.cat([dec_lhand[..., hand_idx], dec_pose[..., 7:8]], dim=-1) # [b, c, t, 21]
-        # print("dec_pose, dec_rhand, dec_lhand: ", dec_pose.shape, dec_rhand.shape, dec_lhand.shape)
 
         return dec_pose, dec_rhand, dec_lhand
 
@@ -189,20 +185,14 @@ class PoseVitVQVAE(pl.LightningModule):
         _, feat, commitment_loss = self.encode(pose, rhand, lhand)
         dec_pose, dec_rhand, dec_lhand = self.decode(feat)
         
-        # print("predictions: ", pose_pred.shape, face_pred.shape, rhand_pred.shape, lhand_pred.shape)
-
         
         
         pose_no_mask = batch["pose_no_mask"][..., list(range(8))]
         rhand_no_mask = batch["rhand_no_mask"]
         lhand_no_mask = batch["lhand_no_mask"]
 
-        # print("pose: ", pose.shape, rhand.shape, lhand.shape)
-        # print("pose_no_mask: ", pose_no_mask.shape, rhand_no_mask.shape, lhand_no_mask.shape)
-        # exit()
 
         pose_rec_loss = (torch.abs(pose - dec_pose) * pose_no_mask).sum() / (pose_no_mask.sum() + 1e-7)
-        # print("pose_rec_loss: ", pose_rec_loss.shape, pose_no_mask.shape)
         rhand_rec_loss = (torch.abs(rhand - dec_rhand) * rhand_no_mask).sum() / (rhand_no_mask.sum()+ 1e-7)
         lhand_rec_loss = (torch.abs(lhand - dec_lhand) * lhand_no_mask).sum() / (lhand_no_mask.sum() + 1e-7)
 
@@ -236,11 +226,9 @@ class PoseVitVQVAE(pl.LightningModule):
             pose_anchor = (640, 360)
             pose_list = self._tensor2numpy(pose[i], pose_anchor, "pose", 25, list(range(8))) # [3V]
 
-            rhand_anchor = (pose_list[4*3], pose_list[4*3 + 1])
-            lhand_anchor = (pose_list[7*3], pose_list[7*3 + 1])
 
-            rhand_list = self._tensor2numpy(rhand[i], rhand_anchor, "rhand", 21, list(range(21)))# , rhand_anchor[0] * 640, rhand_anchor[1] * 360)
-            lhand_list = self._tensor2numpy(lhand[i], lhand_anchor, "lhand", 21, list(range(21))) # , lhand_anchor[0] * 640, lhand_anchor[1] * 360)
+            rhand_list = self._tensor2numpy(rhand[i], pose_anchor, "rhand", 21, list(range(21)))# , rhand_anchor[0] * 640, rhand_anchor[1] * 360)
+            lhand_list = self._tensor2numpy(lhand[i], pose_anchor, "lhand", 21, list(range(21))) # , lhand_anchor[0] * 640, lhand_anchor[1] * 360)
 
             canvas = self._render(pose_list, rhand_list, lhand_list)
             canvas = torch.FloatTensor(canvas) # [h, w, c]
@@ -261,7 +249,6 @@ class PoseVitVQVAE(pl.LightningModule):
         # [[17, 15, 0, 16, 18], [0, 1, 8, 9, 12], [4, 3, 2, 1, 5], [2, 1, 5, 6, 7]]
         # pose_tokens = []
         assert points.shape[0] == len(pose_tokens)
-
 
         pose_vis = np.zeros((keypoint_num, 3), dtype=np.float32)
         for i in range(len(pose_tokens)):
@@ -299,7 +286,7 @@ class PoseVitVQVAE(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=3e-4, betas=(0.9, 0.999))
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1, gamma=0.5, last_epoch=-1)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 3, gamma=0.96, last_epoch=-1)
         return [optimizer], [scheduler]
 
         # optimizer = torch.optim.Adam(self.parameters(), lr=4e-6, betas=(0.9, 0.999))

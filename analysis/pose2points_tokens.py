@@ -10,9 +10,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
 from torchvision.utils import save_image
-from models.pose_vqvae_vit_model import PoseVitVQVAE
+from models.pose_vqvae_vit_model_pyramid import PoseVitVQVAE
 from configs.train_options import TrainOptions
-from data.sign_text2pose_data import How2SignTextPoseData
+from data.sign_text2pose_data_shift import How2SignTextPoseData
 from tqdm import tqdm
 
 

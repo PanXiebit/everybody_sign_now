@@ -122,16 +122,16 @@ perl mosesdecoder/scripts/tokenizer/normalize-punctuation.perl -l en < how2sign_
 perl mosesdecoder/scripts/tokenizer/tokenizer.perl -a -l en < how2sign.val.norm.en > how2sign.val.norm.tok.en
 
 # truecase
-perl mosesdecoder/scripts/recaser/train-truecaser.perl -corpus how2sign.train.norm.tok.en -model truecase-model.en
+# perl mosesdecoder/scripts/recaser/train-truecaser.perl -corpus how2sign.train.norm.tok.en -model truecase-model.en
 
-perl mosesdecoder/scripts/recaser/truecase.perl -model truecase-model.en < how2sign.train.norm.tok.en > how2sign.train.norm.tok.clean.tc.en
-perl mosesdecoder/scripts/recaser/truecase.perl -model truecase-model.en < how2sign.val.norm.tok.en > how2sign.val.norm.tok.clean.tc.en
+# perl mosesdecoder/scripts/recaser/truecase.perl -model truecase-model.en < how2sign.train.norm.tok.en > how2sign.train.norm.tok.clean.tc.en
+# perl mosesdecoder/scripts/recaser/truecase.perl -model truecase-model.en < how2sign.val.norm.tok.en > how2sign.val.norm.tok.clean.tc.en
 
 
 # learn bpe codes
-python subword-nmt/learn_bpe.py -s 20000 < how2sign.train.norm.tok.en > how2sign.codes.en
+# python subword-nmt/learn_bpe.py -s 20000 < how2sign.train.norm.tok.en > how2sign.codes.en
 
-# apply bpe 
-python subword-nmt/apply_bpe.py -c how2sign.codes.en < how2sign.train.norm.tok.clean.tc.en > how2sign.train.pre.en
-python subword-nmt/apply_bpe.py -c how2sign.codes.en < how2sign.val.norm.tok.clean.tc.en > how2sign.val.pre.en
+# # apply bpe 
+# python subword-nmt/apply_bpe.py -c how2sign.codes.en < how2sign.train.norm.tok.clean.tc.en > how2sign.train.pre.en
+# python subword-nmt/apply_bpe.py -c how2sign.codes.en < how2sign.val.norm.tok.clean.tc.en > how2sign.val.pre.en
 

@@ -61,9 +61,9 @@ class PoseDataset(data.Dataset):
         key_json_paths = []
 
         for i in tqdm(range(len(data))):
-            if i > 200: break
+            # if i > 200: break
             if debug and i >= debug: break
-            if "CTERDLghzFw_7-8-rgb_front" == data["SENTENCE_NAME"][i]: continue
+            # if "CTERDLghzFw_7-8-rgb_front" == data["SENTENCE_NAME"][i]: continue
             key_json_path = os.path.join(keypoint_folder, "json", data["SENTENCE_NAME"][i])
             try:
                 assert os.path.exists(key_json_path), "{}".format(key_json_path)
@@ -106,10 +106,18 @@ class PoseDataset(data.Dataset):
         keypoints = self._clips[idx]
 
         pose = keypoints[:, :75]
+        rhand = keypoints[:, 75+210:75+210+63]
+        lhand = keypoints[:, 75+210+63:75+210+63+63]
+
         x_pose = pose[:, ::3]  # [T, V]
         y_pose = pose[:, 1::3] # [T, V]
+        # print("x_pose : ", x_pose[:, 0])
+        # print("y_pose : ", y_pose[:, 0])
 
-        rhand = keypoints[:, 75+210:75+210+63]
+
+        # print("x_anchor : ", x_pose[:, 1])
+        # print("y_anchor : ", y_pose[:, 1])
+        
         x_rhand = rhand[:, ::3]  # [T, V]
         y_rhand = rhand[:, 1::3] # [T, V]
         x_r_shift = x_pose[:, 4:5] - x_rhand[:, 0:1] # pose 4 is right
@@ -117,7 +125,7 @@ class PoseDataset(data.Dataset):
         x_rhand += x_r_shift
         y_rhand += y_r_shift
 
-        lhand = keypoints[:, 75+210+63:75+210+63+63]
+        
         x_lhand = lhand[:, ::3]  # [T, V]
         y_lhand = lhand[:, 1::3] # [T, V]
         x_l_shift = x_pose[:, 7:8] - x_lhand[:, 0:1] # pose 7 is right
@@ -125,9 +133,9 @@ class PoseDataset(data.Dataset):
         x_lhand += x_l_shift
         y_lhand += y_l_shift
 
-        x_anchor = x_pose[:, 8:9] # [T, 1]
-        y_anchor = y_pose[:, 8:9]
-
+        x_anchor = x_pose[:, 1:2] # [T, 1], point 1 is in the center of the image.
+        y_anchor = y_pose[:, 1:2]
+        
         pose, pose_no_mask = self._get_x_y_and_normalize(x_pose, y_pose, x_anchor, y_anchor) # [t, 3v]
         rhand, rhand_no_mask = self._get_x_y_and_normalize(x_rhand, y_rhand, x_anchor, y_anchor)
         lhand, lhand_no_mask = self._get_x_y_and_normalize(x_lhand, y_lhand, x_anchor, y_anchor)
@@ -237,7 +245,7 @@ if __name__ == "__main__":
     for i, data in enumerate(dataloader):
         if i > 20: break
         print("")
-        print("pose: ", data["pose"].shape, data["pose"][:, :2, 4], data["pose"][:, :2, 7])
-        print("rhand: ", data["rhand"].shape, data["rhand"][:, :2, 0])
-        print("lhand: ", data["lhand"].shape, data["lhand"][:, :2, 0])
+        # print("pose: ", data["pose"].shape, data["pose"][:, :2, 4], data["pose"][:, :2, 7])
+        # print("rhand: ", data["rhand"].shape, data["rhand"][:, :2, 0])
+        # print("lhand: ", data["lhand"].shape, data["lhand"][:, :2, 0])
     # exit()

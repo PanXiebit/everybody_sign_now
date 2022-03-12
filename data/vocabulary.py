@@ -169,9 +169,9 @@ class Dictionary(object):
 
 if __name__ == "__main__":
     # tokenized_sent_path = "data/text2gloss/how2sign.train.pre.en"
-    tokenized_sent_path = "data/text2gloss/how2sign.train.norm.tok.en"
+    tokenized_sent_path = "how2sign.train.norm.tok.en"
     # tokenized_sent_path = "data/text2gloss/how2sign.train.norm.tok.clean.tc.en"
-    vocab_file = "data/text2gloss/how2sign_vocab.txt"
+    vocab_file = "how2sign_vocab.txt"
     vocabulary = Dictionary()
     vocabulary._save_vocab_file(tokenized_sent_path, vocab_file)
     vocabulary = vocabulary.load(vocab_file)
