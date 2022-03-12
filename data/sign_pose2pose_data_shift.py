@@ -154,7 +154,7 @@ class PoseDataset(data.Dataset):
         y_points = np.expand_dims(y_points, axis=0)
 
         points = np.concatenate([x_points, y_points], axis=0) # [2, T, V]
-        return torch.FloatTensor(points), no_mask
+        return torch.FloatTensor(points), np.expand_dims(no_mask, axis=0)
 
 
     def readkeypointsfile_json(self, myfile):
