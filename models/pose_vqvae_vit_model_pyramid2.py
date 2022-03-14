@@ -58,36 +58,49 @@ class PoseVitVQVAE(pl.LightningModule):
         self.sp1_pose_conv2 = nn.Conv2d(2, 16, kernel_size=1, stride=1)
         self.sp1_hand_conv1 = nn.Conv2d(2, 16, kernel_size=(1,3), stride=(1,3))
         self.sp1_hand_conv2 = nn.Conv2d(2, 16, kernel_size=1, stride=1)
+        self.sp1_norm = nn.BatchNorm2d(16)
+        self.relu = nn.LeakyReLU()
         # step 2
         self.sp2_pose_conv1  = nn.Conv2d(16, 64, kernel_size=(1,3), stride=(1,3))
         self.sp2_pose_conv2  = nn.Conv2d(16, 64, kernel_size=1, stride=1)
         self.sp2_hand_conv1  = nn.Conv2d(16, 64, kernel_size=(1,2), stride=(1,2))
         self.sp2_hand_conv2  = nn.Conv2d(16, 64, kernel_size=1, stride=1)
+        self.sp2_norm = nn.BatchNorm2d(64)
         # step 3
         self.sp3_conv1 = nn.Conv2d(64, 256, kernel_size=(1, 6), stride=(1,6))
         self.sp3_conv2 = nn.Conv2d(64, 256, kernel_size=1, stride=1)
+        self.sp3_norm = nn.BatchNorm2d(256)
         # step 4
         self.sp4_conv1 = nn.Conv2d(256, 512, kernel_size=(1, 3), stride=(1,3))
+        self.sp4_norm = nn.BatchNorm2d(512)
 
         self.enc_vit = Transformer(dim=512, depth=3, heads=8, dim_head=64, mlp_dim=2048, dropout = 0.1)
-        # self.pre_vq = nn.Conv1d(512, 512, 1, 1)
+        self.pre_vq = nn.Conv1d(512, 512, 1, 1)
 
-        # self.pose_vq = nn.Conv1d(512, 512, 1, 1)
-        # self.dec_vit = Transformer(dim=512, depth=3, heads=8, dim_head=64, mlp_dim=2048, dropout = 0.1)
+        self.post_vq = nn.Conv1d(512, 512, 1, 1)
+        self.dec_vit = Transformer(dim=512, depth=3, heads=8, dim_head=64, mlp_dim=2048, dropout = 0.1)
         self.codebook = Codebook(n_codes=5120, embedding_dim=512)
         
         # upsample
         # step 4
+        self.sp4_up_norm = nn.BatchNorm2d(512)
         self.sp4_transconv1 = nn.ConvTranspose2d(512, 256, kernel_size=(1,3), stride=1)
+        
         # step 3
+        self.sp3_up_norm = nn.BatchNorm2d(256)
         self.sp3_transconv1 = nn.ConvTranspose2d(256, 64, kernel_size=(1,6), stride=1)
         self.sp3_transconv2 = nn.ConvTranspose2d(256, 64, kernel_size=1, stride=1)
+        
         # step 2
+        self.sp2_up_norm = nn.BatchNorm2d(64)
         self.sp2_hand_transconv1 = nn.ConvTranspose2d(64, 16, kernel_size=(1,2), stride=(1,2))
         self.sp2_hand_transconv2 = nn.ConvTranspose2d(64, 16, kernel_size=1, stride=1)
         self.sp2_pose_transconv1 = nn.ConvTranspose2d(64, 16, kernel_size=(1,3), stride=1)
         self.sp2_pose_transconv2 = nn.ConvTranspose2d(64, 16, kernel_size=1, stride=1)
+        
+
         # step 1
+        self.sp1_up_norm = nn.BatchNorm2d(16)
         self.sp1_pose_transconv1 = nn.ConvTranspose2d(16, 2, kernel_size=(1,4), stride=1)
         self.sp1_pose_transconv2 = nn.ConvTranspose2d(16, 2, kernel_size=1, stride=1)
         self.sp1_hand_transconv1 = nn.ConvTranspose2d(16, 2, kernel_size=(1,3), stride=(1,3))
@@ -98,62 +111,83 @@ class PoseVitVQVAE(pl.LightningModule):
 
     def heuristic_downsample(self, pose, rhand, lhand):
         # step1:
-        sp1_pose1 = self.sp1_pose_conv1(pose[..., [0,1,2,5]]) # [bs, 16, t, 1]
-        sp1_pose2 = self.sp1_pose_conv2(pose[..., [3,4,6,7]]) # [bs, 16, t, 4]
+        sp1_pose1 = self.sp1_pose_conv1(pose[..., [0,1,2,5]]) # [bs, 16, t, 1] (0,1,2,5)
+        sp1_pose2 = self.sp1_pose_conv2(pose[..., [3,4,6,7]]) # [bs, 16, t, 4], 3,4,6,7
 
-        sp1_rhand1 = self.sp1_hand_conv1(rhand[..., [2,3,4, 6,7,8, 10,11,12, 14,15,16, 18,19,20]]) 
+        sp1_rhand1 = self.sp1_hand_conv1(rhand[..., [2,3,4, 6,7,8, 10,11,12, 14,15,16, 18,19,20]])  # [bs, 16, t, 5]
         sp1_rhand2 = self.sp1_hand_conv2(rhand[..., [1,5,9,13,17]])
         
         sp1_lhand1 = self.sp1_hand_conv1(lhand[..., [2,3,4, 6,7,8, 10,11,12, 14,15,16, 18,19,20]]) 
         sp1_lhand2 = self.sp1_hand_conv2(lhand[..., [1,5,9,13,17]])  # [0,1,5,9,13,17]
+
+        sp1_points = torch.cat([sp1_pose1, sp1_pose2, sp1_rhand1, sp1_rhand2, sp1_lhand1, sp1_lhand2], dim=-1)
+        sp1_points = self.relu(self.sp1_norm(sp1_points))
+        # print("sp1_points: ", sp1_points.shape)
         
+        sp1_pose = sp1_points[..., 0:5]
+        sp1_rhand = sp1_points[..., 5:15]
+        sp1_lhand = sp1_points[..., 15:25]
+
         # step2
-        sp2_pose1 = self.sp2_pose_conv1(torch.cat([sp1_pose1, sp1_pose2[..., [0,2]]], dim=-1)) # (0,1,2,5),3,6
-        sp2_pose2 = self.sp2_pose_conv2(sp1_pose2[..., [1,3]])  # [4, 7]
+        sp2_pose1 = self.sp2_pose_conv1(sp1_pose[..., [0, 1, 3]]) # [b,c,t,1], (0,1,2,5),3,6
+        sp2_pose2 = self.sp2_pose_conv2(sp1_pose[..., [2,4]])  # [b,c,t,2], [4, 7]
 
-        sp2_rhand1 = self.sp2_hand_conv1(torch.cat([sp1_rhand1[..., 0:1], sp1_rhand2[..., 0:1]], dim=-1)) # (2,3,4), 1
-        sp2_rhand2 = self.sp2_hand_conv1(torch.cat([sp1_rhand1[..., 1:2], sp1_rhand2[..., 1:2]], dim=-1)) # (6,7,8), 5
-        sp2_rhand3 = self.sp2_hand_conv1(torch.cat([sp1_rhand1[..., 2:3], sp1_rhand2[..., 2:3]], dim=-1)) # (10,11,12), 9
-        sp2_rhand4 = self.sp2_hand_conv1(torch.cat([sp1_rhand1[..., 3:4], sp1_rhand2[..., 3:4]], dim=-1)) # (14,15,16), 13
-        sp2_rhand5 = self.sp2_hand_conv1(torch.cat([sp1_rhand1[..., 4:5], sp1_rhand2[..., 4:5]], dim=-1)) # (18,19,20), 17
+        sp2_rhand1 = self.sp2_hand_conv1(sp1_rhand[..., [0,5]]) # [b,c,t,1], (2,3,4), 1
+        sp2_rhand2 = self.sp2_hand_conv1(sp1_rhand[..., [1,6]]) # [b,c,t,1], (6,7,8), 5
+        sp2_rhand3 = self.sp2_hand_conv1(sp1_rhand[..., [2,7]]) # [b,c,t,1], (10,11,12), 9
+        sp2_rhand4 = self.sp2_hand_conv1(sp1_rhand[..., [3,8]]) # [b,c,t,1], (14,15,16), 13
+        sp2_rhand5 = self.sp2_hand_conv1(sp1_rhand[..., [4,9]]) # [b,c,t,1], (18,19,20), 17
 
-        sp2_lhand1 = self.sp2_hand_conv1(torch.cat([sp1_lhand1[..., 0:1], sp1_lhand2[..., 0:1]], dim=-1)) # (2,3,4), 1
-        sp2_lhand2 = self.sp2_hand_conv1(torch.cat([sp1_lhand1[..., 1:2], sp1_lhand2[..., 1:2]], dim=-1)) # (6,7,8), 5
-        sp2_lhand3 = self.sp2_hand_conv1(torch.cat([sp1_lhand1[..., 2:3], sp1_lhand2[..., 2:3]], dim=-1)) # (10,11,12), 9
-        sp2_lhand4 = self.sp2_hand_conv1(torch.cat([sp1_lhand1[..., 3:4], sp1_lhand2[..., 3:4]], dim=-1)) # (14,15,16), 13
-        sp2_lhand5 = self.sp2_hand_conv1(torch.cat([sp1_lhand1[..., 4:5], sp1_lhand2[..., 4:5]], dim=-1)) # (18,19,20), 17
-        
+        sp2_lhand1 = self.sp2_hand_conv1(sp1_lhand[..., [0,5]]) # [b,c,t,1], (2,3,4), 1
+        sp2_lhand2 = self.sp2_hand_conv1(sp1_lhand[..., [1,6]]) # [b,c,t,1], (6,7,8), 5
+        sp2_lhand3 = self.sp2_hand_conv1(sp1_lhand[..., [2,7]]) # [b,c,t,1], (10,11,12), 9
+        sp2_lhand4 = self.sp2_hand_conv1(sp1_lhand[..., [3,8]]) # [b,c,t,1], (14,15,16), 13
+        sp2_lhand5 = self.sp2_hand_conv1(sp1_lhand[..., [4,9]]) # [b,c,t,1], (18,19,20), 17
+
+        sp2_points = torch.cat([sp2_pose1, sp2_pose2, sp2_rhand1, sp2_rhand2, sp2_rhand3, sp2_rhand4, sp2_rhand5,
+                                sp2_lhand1, sp2_lhand2, sp2_lhand3, sp2_lhand4, sp2_lhand5], dim=-1)
+        sp2_points = self.relu(self.sp2_norm(sp2_points))
+        # print("sp2_points: ", sp2_points.shape)
+
         # step 3
-        sp3_rhand = torch.cat([sp2_pose2[..., 0:1], sp2_rhand1, sp2_rhand2, sp2_rhand3, sp2_rhand4, sp2_rhand5], dim=-1) # [b h t 6]
-        sp3_rhand = self.sp3_conv1(sp3_rhand)
-        sp3_lhand = torch.cat([sp2_pose2[..., 1:2], sp2_lhand1, sp2_lhand2, sp2_lhand3, sp2_lhand4, sp2_lhand5], dim=-1)
-        sp3_lhand = self.sp3_conv1(sp3_lhand)
-        sp3_pose = self.sp3_conv2(sp2_pose1)
-
-        # step 4
-        sp4_point = torch.cat([sp3_rhand, sp3_pose, sp3_lhand], dim=-1)
-        sp4_point = self.sp4_conv1(sp4_point)
+        # sp3_rhand = torch.cat([sp2_pose2[..., 0:1], sp2_rhand1, sp2_rhand2, sp2_rhand3, sp2_rhand4, sp2_rhand5], dim=-1) # [b h t 6]
+        sp3_rhand = self.sp3_conv1(sp2_points[..., [1, 3,4,5,6,7]])
+        # sp3_lhand = torch.cat([sp2_pose2[..., 1:2], sp2_lhand1, sp2_lhand2, sp2_lhand3, sp2_lhand4, sp2_lhand5], dim=-1)
+        sp3_lhand = self.sp3_conv1(sp2_points[..., [2, 8,9,10,11,12]])
+        sp3_pose = self.sp3_conv2(sp2_points[..., 0:1])
+        sp3_point = torch.cat([sp3_rhand, sp3_pose, sp3_lhand], dim=-1)
+        sp3_point = self.relu(self.sp3_norm(sp3_point))
+        # print("sp3_point: ", sp3_point.shape)
         
+        # step 4
+        sp4_point = self.sp4_conv1(sp3_point)
+        # print("sp4_point: ", sp4_point.shape)
+
         return sp4_point.squeeze(-1)
 
     def encode(self, pose, rhand, lhand):
         points_feat = self.heuristic_downsample(pose, rhand, lhand)
         points_feat = self.enc_vit(einops.rearrange(points_feat, "b c t -> b t c"))
         points_feat = einops.rearrange(points_feat, "b t c -> b c t")
-        vq_output = self.codebook(points_feat)
+        vq_output = self.codebook(self.pre_vq(points_feat))
         
         return vq_output['encodings'], vq_output['embeddings'], vq_output["commitment_loss"]
 
     def decode(self, feat):
-        feat = self.enc_vit(einops.rearrange(feat, "b c t -> b t c"))
+        feat = self.post_vq(feat)
+        feat = self.dec_vit(einops.rearrange(feat, "b c t -> b t c"))
         feat = einops.rearrange(feat, "b t c -> b c t")
         feat = feat.unsqueeze(-1)  # b c t, 1
 
         # step 4
+        feat = self.relu(feat)
+        feat = self.sp4_up_norm(feat)
         sp4_feat = self.sp4_transconv1(feat) # b c t, 3
         # print("sp4_feat: ", sp4_feat.shape)
 
         # step 3
+        sp4_feat = self.relu(sp4_feat)
+        sp4_feat = self.sp3_up_norm(sp4_feat)
         sp3_rhand = self.sp3_transconv1(sp4_feat[:, :, :, 0:1]) # b c t, 6
         sp3_pose = self.sp3_transconv2(sp4_feat[:, :, :, 1:2]) # b c t, 1
         sp3_lhand = self.sp3_transconv1(sp4_feat[:, :, :, 2:3]) # b c t, 6
@@ -208,9 +242,12 @@ class PoseVitVQVAE(pl.LightningModule):
         _, feat, commitment_loss = self.encode(pose, rhand, lhand)
         dec_pose, dec_rhand, dec_lhand = self.decode(feat)
         
+        
+        
         pose_no_mask = batch["pose_no_mask"][..., list(range(8))]
         rhand_no_mask = batch["rhand_no_mask"]
         lhand_no_mask = batch["lhand_no_mask"]
+
 
         pose_rec_loss = (torch.abs(pose - dec_pose) * pose_no_mask).sum() / (pose_no_mask.sum() + 1e-7)
         rhand_rec_loss = (torch.abs(rhand - dec_rhand) * rhand_no_mask).sum() / (rhand_no_mask.sum()+ 1e-7)

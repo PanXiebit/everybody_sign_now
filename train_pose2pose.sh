@@ -13,7 +13,7 @@ python -m train_pose2pose \
     --sequence_length ${sequence_length} \
     --debug 0 \
     --gpu_ids "0" \
-    --default_root_dir "logs/pyramid_SeqLen_${sequence_length}" \
+    --default_root_dir "logs/spl_SeqLen_${sequence_length}" \
     # --default_root_dir "logs/test" \
 
 
