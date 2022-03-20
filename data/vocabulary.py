@@ -17,6 +17,7 @@ class Dictionary(object):
     def __init__(
         self,
         pad='<pad>',
+        blank='<blank>',
         eos='</s>',
         unk='<unk>',
         bos='<s>',
@@ -27,6 +28,7 @@ class Dictionary(object):
         self.symbols = []
         self.count = []
         self.indices = {}
+        self.blank_index = self.add_symbol(blank)
         self.bos_index = self.add_symbol(bos)
         self.pad_index = self.add_symbol(pad)
         self.eos_index = self.add_symbol(eos)
@@ -61,6 +63,10 @@ class Dictionary(object):
             self.symbols.append(word)
             self.count.append(n)
             return idx
+
+    def blank(self):
+        """Helper to get index of beginning-of-sentence symbol"""
+        return self.blank_index
 
     def bos(self):
         """Helper to get index of beginning-of-sentence symbol"""
@@ -120,12 +126,17 @@ class Dictionary(object):
         for line in lines[indices_start_line:]:
             idx = line.rfind(' ')
             if idx == -1:
-                raise ValueError("Incorrect dictionary format, expected '<token> <cnt>'")
-            word = line[:idx]
-            count = int(line[idx + 1:])
-            self.indices[word] = len(self.symbols)
-            self.symbols.append(word)
-            self.count.append(count)
+                word = line.strip()
+                count = 1
+                self.indices[word] = len(self.symbols)
+                self.symbols.append(word)
+                self.count.append(count)
+            else:
+                word = line[:idx]
+                count = int(line[idx + 1:])
+                self.indices[word] = len(self.symbols)
+                self.symbols.append(word)
+                self.count.append(count)
     
     def index(self, sym):
         """Returns the index of the specified symbol"""

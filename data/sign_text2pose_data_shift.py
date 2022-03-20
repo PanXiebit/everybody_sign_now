@@ -229,11 +229,13 @@ class PoseSentDataset(data.Dataset):
 
         tokens = self.collate_tokens([x["tokens"] for x in batch], pad_idx=self.text_dict.pad())
         tokens_len = torch.IntTensor([x["tokens"].size(0) for x in batch])
+
+        sents = [x["sent"] for x in batch]
             
         return dict(points_len=points_len, tokens=tokens, tokens_len=tokens_len,
                     pose=pose, pose_no_mask=pose_no_mask,
                     rhand=rhand, rhand_no_mask=rhand_no_mask, 
-                    lhand=lhand, lhand_no_mask=lhand_no_mask)
+                    lhand=lhand, lhand_no_mask=lhand_no_mask, sents=sents)
 
 
     def collate_tokens(self, values, pad_idx, left_pad=False):

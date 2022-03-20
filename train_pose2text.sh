@@ -14,16 +14,14 @@
 
 
 
-python -m train_text2pose \
+python -m train_pose2text \
     --gpus 1 \
     --batchSize 8 \
     --data_path "Data/ProgressiveTransformersSLP" \
     --text_path "data/text2gloss/" \
     --vocab_file "Data/ProgressiveTransformersSLP/src_vocab.txt" \
-    --pose_vqvae "logs/phoneix_spl_seperate_SeqLen_1/lightning_logs/version_3/checkpoints/epoch=123-step=50095.ckpt" \
-    --hparams_file "logs/phoneix_spl_seperate_SeqLen_1/lightning_logs/version_3/hparams.yaml" \
     --resume_ckpt "" \
-    --default_root_dir "text2pose_logs/phoneix_seperate" \
+    --default_root_dir "pose2text_logs/" \
     --max_steps 300000 \
     --max_frames_num 200 \
     --gpu_ids "0" \

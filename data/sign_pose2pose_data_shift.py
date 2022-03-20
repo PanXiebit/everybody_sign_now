@@ -63,15 +63,18 @@ class PoseDataset(data.Dataset):
         for i in tqdm(range(len(data))):
             # if i > 200: break
             if debug and i >= debug: break
-            # if "CTERDLghzFw_7-8-rgb_front" == data["SENTENCE_NAME"][i]: continue
+            
             key_json_path = os.path.join(keypoint_folder, "json", data["SENTENCE_NAME"][i])
+            if "-d5dN54tH2E_1-1-rgb_front" == data["SENTENCE_NAME"][i]: 
+                print("key_json_path: ", key_json_path)
+                continue
             try:
                 assert os.path.exists(key_json_path), "{}".format(key_json_path)
+                key_json_paths.append(key_json_path)
             except:
                 # print(data["SENTENCE_NAME"][i])
                 continue
-            key_json_paths.append(key_json_path)
-
+            
         sequence_length = opts.sequence_length
         warnings.filterwarnings('ignore')
 
@@ -240,7 +243,7 @@ if __name__ == "__main__":
     opts= Option()
 
     # dataloader = How2SignPoseData(opts).train_dataloader()
-    dataloader = PoseDataset(opts)
+    dataloader = PoseDataset(opts, False)
 
     for i, data in enumerate(dataloader):
         if i > 20: break

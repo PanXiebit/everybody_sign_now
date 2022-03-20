@@ -23,7 +23,7 @@ def save_text(csv_path, text_path, train=True):
     with open(text_path, "w") as f:
         for i in tqdm(range(len(data))):
             if debug and i >= debug: break
-            sent = data["SENTENCE"][i].strip()
+            sent = data["SENTENCE"][i].lower().strip()
             f.write(sent + "\n")
 
 if __name__ == "__main__":

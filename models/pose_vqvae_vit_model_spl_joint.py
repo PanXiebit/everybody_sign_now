@@ -26,6 +26,23 @@ def iden(x):
     return x
 
 
+class Upsample(nn.Module):
+    def __init__(self, in_channels, with_conv):
+        super().__init__()
+        self.with_conv = with_conv
+        if self.with_conv:
+            self.conv = torch.nn.Conv2d(in_channels,
+                                        in_channels,
+                                        kernel_size=3,
+                                        stride=1,
+                                        padding=1)
+
+    def forward(self, x, scale_factor):
+        x = torch.nn.functional.interpolate(x, scale_factor=scale_factor, mode="nearest")
+        if self.with_conv:
+            x = self.conv(x)
+        return x
+
 
 class PoseVitVQVAE(pl.LightningModule):
     def __init__(self, args):
@@ -36,9 +53,11 @@ class PoseVitVQVAE(pl.LightningModule):
         self.pose_emb = nn.Linear(16, 256)
         self.hand_emb = nn.Linear(42, 256)
 
-        self.enc_vit = Transformer(dim=256, depth=3, heads=8, dim_head=64, mlp_dim=1024, dropout = 0.1)
-        self.codebook = Codebook(n_codes=5120, embedding_dim=256)
-        self.dec_vit = Transformer(dim=256, depth=3, heads=8, dim_head=64, mlp_dim=1024, dropout = 0.1)
+        # self.enc_vit = Transformer(dim=256, depth=3, heads=8, dim_head=64, mlp_dim=1024, dropout = 0.1)
+        self.enc_ffn = FeedForward(256*3, 256*6)
+        self.codebook = Codebook(n_codes=5120, embedding_dim=256*3)
+
+        self.dec_ffn = FeedForward(256*3, 256*6)
 
         self.pose_spl = SPL(input_size=256, hidden_layers=5, hidden_units=256, joint_size=2, reuse=False, sparse=False, SKELETON="sign_pose")        
         self.hand_spl = SPL(input_size=256, hidden_layers=5, hidden_units=256, joint_size=2, reuse=False, sparse=False, SKELETON="sign_hand")        
@@ -59,25 +78,22 @@ class PoseVitVQVAE(pl.LightningModule):
         lhand = self.hand_emb(lhand) # [bs, t, 1, h]
 
         x = torch.cat([pose.unsqueeze(-2), rhand.unsqueeze(-2), lhand.unsqueeze(-2)], dim=-2)  # [bs, t, 3, h]
-        x = einops.rearrange(x, "b t n h -> b (t n) h")
-
-        x = self.enc_vit(x)
+        x = einops.rearrange(x, "b t n h -> b t (n h)") # [bs, t*3, h]
+        x = self.enc_ffn(x)
         x = einops.rearrange(x, "b t h -> b h t")
         vq_output = self.codebook(x)
-        
         return vq_output['encodings'], vq_output['embeddings'], vq_output["commitment_loss"]
 
     def decode(self, x):
-        """x: [bs,c,t]
+        """x: [bs, c, t]
         """
         b, _, t = x.size()
-        x = einops.rearrange(x, "b h t -> b t h")
-        x = self.dec_vit(x)
-        x = einops.rearrange(x, "b (t n) h -> (b t) n h", n=3)
+        x = einops.rearrange(x, "b h t-> b t h")
+        x = self.dec_ffn(x)
+        x = einops.rearrange(x, "b t (n h) -> (b t) n h", n=3)
         pose = self.pose_spl(x[:, 0, :])
         rhand = self.hand_spl(x[:, 1, :])
         lhand = self.hand_spl(x[:, 2, :])
-
         pose = einops.rearrange(pose, "(b t) (c v) -> b c t v", b=b, c=2, v=8)
         rhand = einops.rearrange(rhand, "(b t) (c v) -> b c t v", b=b, c=2, v=21)
         lhand = einops.rearrange(lhand, "(b t) (c v) -> b c t v", b=b, c=2, v=21)

@@ -18,6 +18,8 @@ from modules.nearby_attn import AttnBlock
 from modules.vq_fn import Codebook
 import einops
 from modules.sp_layer import SPL
+from util.plot_videos import draw_frame_2D
+
 
 def zero(x):
     return 0
@@ -27,78 +29,67 @@ def iden(x):
 
 
 
+
 class PoseVitVQVAE(pl.LightningModule):
     def __init__(self, args):
         super().__init__()
 
         self.args = args
         
-        self.pose_emb = nn.Linear(16, 256)
-        self.hand_emb = nn.Linear(42, 256)
+        self.pose_emb = nn.Linear(24, 256)
+        self.rhand_emb = nn.Linear(63, 256)
+        self.lhand_emb = nn.Linear(63, 256)
 
-        self.enc_vit = Transformer(dim=256, depth=3, heads=8, dim_head=64, mlp_dim=1024, dropout = 0.1)
-        self.codebook = Codebook(n_codes=5120, embedding_dim=256)
-        self.dec_vit = Transformer(dim=256, depth=3, heads=8, dim_head=64, mlp_dim=1024, dropout = 0.1)
+        # self.enc_vit = Transformer(dim=256, depth=3, heads=8, dim_head=64, mlp_dim=1024, dropout = 0.1)
+        self.enc_ffn = FeedForward(256*3, 256*6)
+        self.codebook = Codebook(n_codes=5120, embedding_dim=256*3)
 
-        self.pose_spl = SPL(input_size=256, hidden_layers=5, hidden_units=256, joint_size=2, reuse=False, sparse=False, SKELETON="sign_pose")        
-        self.hand_spl = SPL(input_size=256, hidden_layers=5, hidden_units=256, joint_size=2, reuse=False, sparse=False, SKELETON="sign_hand")        
+        self.dec_ffn = FeedForward(256*3, 256*6)
+
+        self.pose_spl = SPL(input_size=256, hidden_layers=5, hidden_units=256, joint_size=3, reuse=False, sparse=False, SKELETON="sign_pose")        
+        self.hand_spl = SPL(input_size=256, hidden_layers=5, hidden_units=256, joint_size=3, reuse=False, sparse=False, SKELETON="sign_hand")        
         
         self.save_hyperparameters()
 
 
     def encode(self, pose, rhand, lhand):
-        """pose: [bs, 2, t, 8]
-           rhand: [bs, 2, t, 21]
-           lhand: [bs, 2, t, 21]
+        """points: [bs, 150]
         """
-        pose = einops.rearrange(pose, "b c t v -> b t (c v)")
-        pose = self.pose_emb(pose) # [bs, t, 1, h]
-        rhand = einops.rearrange(rhand, "b c t v -> b t (c v)")
-        rhand = self.hand_emb(rhand) # [bs, t, 1, h]
-        lhand = einops.rearrange(lhand, "b c t v -> b t (c v)")
-        lhand = self.hand_emb(lhand) # [bs, t, 1, h]
+        pose = self.pose_emb(pose) # [bs, 512]
+        rhand = self.rhand_emb(rhand) # [bs, 512]
+        lhand = self.lhand_emb(lhand) # [bs, 512]
 
-        x = torch.cat([pose.unsqueeze(-2), rhand.unsqueeze(-2), lhand.unsqueeze(-2)], dim=-2)  # [bs, t, 3, h]
-        x = einops.rearrange(x, "b t n h -> b (t n) h")
-
-        x = self.enc_vit(x)
-        x = einops.rearrange(x, "b t h -> b h t")
-        vq_output = self.codebook(x)
-        
+        x = torch.cat([pose, rhand, lhand], dim=-1) # [bs, 256*3]
+        x = self.enc_ffn(x)
+        vq_output = self.codebook(x.unsqueeze(-1))
         return vq_output['encodings'], vq_output['embeddings'], vq_output["commitment_loss"]
 
     def decode(self, x):
-        """x: [bs,c,t]
+        """x: [bs, c, t]
         """
         b, _, t = x.size()
-        x = einops.rearrange(x, "b h t -> b t h")
-        x = self.dec_vit(x)
-        x = einops.rearrange(x, "b (t n) h -> (b t) n h", n=3)
-        pose = self.pose_spl(x[:, 0, :])
+        x = einops.rearrange(x, "b h t-> b t h")
+        x = self.dec_ffn(x)
+        x = einops.rearrange(x, "b t (n h) -> (b t) n h", n=3)
+        pose = self.pose_spl(x[:, 0, :]) # []
         rhand = self.hand_spl(x[:, 1, :])
         lhand = self.hand_spl(x[:, 2, :])
 
-        pose = einops.rearrange(pose, "(b t) (c v) -> b c t v", b=b, c=2, v=8)
-        rhand = einops.rearrange(rhand, "(b t) (c v) -> b c t v", b=b, c=2, v=21)
-        lhand = einops.rearrange(lhand, "(b t) (c v) -> b c t v", b=b, c=2, v=21)
-        
         return pose, rhand, lhand
 
     def forward(self, batch, mode):
-        pose = batch["pose"][..., [1,0,2,3,4,5,6,7]]
-        rhand = batch["rhand"]
-        lhand = batch["lhand"]
+        points = batch["skel_3d"]  # [bs, 150]
+        pose = points[:, :24]
+        rhand = points[:, 24:24+63]
+        lhand = points[:, 87:150]
+
         _, feat, commitment_loss = self.encode(pose, rhand, lhand)
         
         dec_pose, dec_rhand, dec_lhand = self.decode(feat)
-        
-        pose_no_mask = batch["pose_no_mask"][..., [1,0,2,3,4,5,6,7]]
-        rhand_no_mask = batch["rhand_no_mask"]
-        lhand_no_mask = batch["lhand_no_mask"]
 
-        pose_rec_loss = (torch.abs(pose - dec_pose) * pose_no_mask).sum() / (pose_no_mask.sum() + 1e-7)
-        rhand_rec_loss = (torch.abs(rhand - dec_rhand) * rhand_no_mask).sum() / (rhand_no_mask.sum()+ 1e-7)
-        lhand_rec_loss = (torch.abs(lhand - dec_lhand) * lhand_no_mask).sum() / (lhand_no_mask.sum() + 1e-7)
+        pose_rec_loss = torch.abs(pose - dec_pose).mean()
+        rhand_rec_loss = torch.abs(rhand - dec_rhand).mean()
+        lhand_rec_loss = torch.abs(lhand - dec_lhand).mean()
 
         rec_loss = pose_rec_loss + rhand_rec_loss + lhand_rec_loss
         loss = rec_loss + commitment_loss
@@ -108,7 +99,7 @@ class PoseVitVQVAE(pl.LightningModule):
         self.log('{}/rhand_rec_loss'.format(mode), rhand_rec_loss.detach(), prog_bar=True)
         self.log('{}/lhand_rec_loss'.format(mode), lhand_rec_loss.detach(), prog_bar=True)
         self.log('{}/rec_loss'.format(mode), rec_loss.detach(), prog_bar=True)
-
+        
         if mode == "train" and self.global_step % 200 == 0:
             self.vis(pose, rhand, lhand, "train", "ori_vis")
             self.vis(dec_pose, dec_rhand, dec_lhand, "train", "dec_vis")
@@ -118,10 +109,21 @@ class PoseVitVQVAE(pl.LightningModule):
                 "prediction": [dec_pose, dec_rhand, dec_lhand]}
 
     def vis(self, pose, rhand, lhand, mode, name):
-        pose = pose[..., [1,0,2,3,4,5,6,7,]]
-        for i in range(4):
-            self.visualization(mode, name, pose[i], rhand[i], lhand[i], i)
-            
+        points = torch.cat([pose, rhand, lhand], dim=-1).detach().cpu().numpy()
+        # points: [bs, 150]
+        show_img = []
+        for j in range(4):
+            frame_joints = points[j]
+            frame = np.ones((650, 650, 3), np.uint8) * 255
+            frame_joints_2d = np.reshape(frame_joints, (50, 3))[:, :2]
+            # Draw the frame given 2D joints
+            im = draw_frame_2D(frame, frame_joints_2d)
+            show_img.append(im)
+        show_img = np.concatenate(show_img, axis=1) # [h, w, c]
+        show_img = torch.FloatTensor(show_img).permute(2, 0, 1).contiguous().unsqueeze(0) # [1, c, h ,w]
+        show_img = torchvision.utils.make_grid(show_img, )
+        self.logger.experiment.add_image("{}/{}".format(mode, name), show_img, self.global_step)
+        
 
     def training_step(self, batch, batch_idx):
         out = self.forward(batch, "train")
@@ -136,65 +138,6 @@ class PoseVitVQVAE(pl.LightningModule):
             self.vis(pose, rhand, lhand, "val", "ori_vis")
             self.vis(dec_pose, dec_rhand, dec_lhand, "val", "dec_vis")
 
-    def visualization(self, mode, name, pose, rhand, lhand, idx):
-        # visualize
-        ori_vis = []
-
-        c, t, v = pose.size()
-        pose = pose.permute(1, 2, 0).contiguous()  # [t, v, c]
-        rhand = rhand.permute(1, 2, 0).contiguous()
-        lhand = lhand.permute(1, 2, 0).contiguous()
-
-        for i in range(pose.size(0)):   
-            pose_anchor = (640, 360)
-            pose_list = self._tensor2numpy(pose[i], pose_anchor, "pose", 25, list(range(8))) # [3V]
-
-
-            rhand_list = self._tensor2numpy(rhand[i], pose_anchor, "rhand", 21, list(range(21)))# , rhand_anchor[0] * 640, rhand_anchor[1] * 360)
-            lhand_list = self._tensor2numpy(lhand[i], pose_anchor, "lhand", 21, list(range(21))) # , lhand_anchor[0] * 640, lhand_anchor[1] * 360)
-
-            canvas = self._render(pose_list, rhand_list, lhand_list)
-            canvas = torch.FloatTensor(canvas) # [h, w, c]
-            canvas = canvas.permute(2, 0, 1).contiguous().unsqueeze(0)
-            
-            ori_vis.append(canvas) # [1, c, h, w]
-        ori_vis = torch.cat(ori_vis, dim=0)
-        ori_vis = torchvision.utils.make_grid(ori_vis, )
-        self.logger.experiment.add_image("{}/{}_{}".format(mode, name, idx), ori_vis, self.global_step)
-        return mode, name, ori_vis
-    
-    def _tensor2numpy(self, points, anchor, part_name, keypoint_num, pose_tokens):
-        """[v, c]]
-        """
-        points = points.detach().cpu().numpy()
-        v, c = points.shape
-        # [[17, 15, 0, 16, 18], [0, 1, 8, 9, 12], [4, 3, 2, 1, 5], [2, 1, 5, 6, 7]]
-        # pose_tokens = []
-        assert points.shape[0] == len(pose_tokens)
-
-        pose_vis = np.zeros((keypoint_num, 3), dtype=np.float32)
-        for i in range(len(pose_tokens)):
-            pose_vis[pose_tokens[i], 0] = points[i][0] * 1280 + anchor[0]
-            pose_vis[pose_tokens[i], 1] = points[i][1] * 720 + anchor[1]
-            pose_vis[pose_tokens[i], -1] = 1.
-        
-        pose_vis = pose_vis.reshape((-1, ))
-        # print(pose_vis.shape, pose_vis)
-        return pose_vis.tolist()
-
-
-    def _render(self, posepts, r_handpts, l_handpts):
-        myshape = (720, 1280, 3)
-        numkeypoints = 70
-        canvas = renderpose(posepts, 255 * np.ones(myshape, dtype='uint8'))
-        canvas = renderhand(r_handpts, canvas)
-        canvas = renderhand(l_handpts, canvas) # [720, 720, 3]
-        canvas = canvas[:, 280:1000, :]
-        canvas = cv2.resize(canvas, (256, 256), interpolation=cv2.INTER_CUBIC) # [256, 256, 3]
-
-        # img = Image.fromarray(canvas[:, :, [2,1,0]])
-
-        return canvas # [256, 256, 3]
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=3e-4, betas=(0.9, 0.999))

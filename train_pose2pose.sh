@@ -2,18 +2,18 @@
 atten_type="spatial-temporal-joint"
 decoder_type="divided-unshare"
 temporal_downsample=1
-sequence_length=16
+sequence_length=1
 n_codes=5120
 
 python -m train_pose2pose \
     --gpus 1 \
-    --batchSize 128 \
-    --data_path Data/how2sign \
+    --batchSize 2048 \
+    --data_path Data/ProgressiveTransformersSLP \
     --n_codes ${n_codes} \
     --sequence_length ${sequence_length} \
     --debug 0 \
     --gpu_ids "0" \
-    --default_root_dir "logs/spl_SeqLen_${sequence_length}" \
+    --default_root_dir "logs/phoneix_spl_seperate_SeqLen_${sequence_length}" \
     # --default_root_dir "logs/test" \
 
 

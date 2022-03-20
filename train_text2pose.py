@@ -3,10 +3,9 @@ from configs.train_options import TrainOptions
 import pytorch_lightning as pl
 import argparse
 
-from models.text2pose_nar_model import Text2PoseModel
-from models.text2pose_model_separate_ar_vec2 import Text2PoseModel
+from models_phoneix.text2pose_model_ctc import Text2PoseModel
 from pytorch_lightning.callbacks import ModelCheckpoint
-from data.sign_text2pose_data import How2SignTextPoseData
+from data_phoneix.phoneix_text2pose_data_shift import PhoenixPoseData
 from util.util import CheckpointEveryNSteps
 from data.vocabulary import Dictionary
 import os
@@ -20,7 +19,8 @@ def main():
     opt = TrainOptions(parser).parse()
     print(opt)
 
-    data = How2SignTextPoseData(opt)
+    # data = How2SignTextPoseData(opt)
+    data = PhoenixPoseData(opt)
     data.train_dataloader()
     data.test_dataloader()
 

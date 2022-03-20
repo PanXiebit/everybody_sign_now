@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 
 
 token_dict = defaultdict(int)
-with open("text2point_tokens_mcodebooks.txt", "r") as f:
+with open("text2point_tokens_spl_train.txt", "r") as f:
     for line in f:
         content = line.strip().split(" ||| ")
         pose_tokens = [int(w) for w in content[1].split()]
@@ -94,4 +94,14 @@ numer > 10:  4652
 numer > 100:  3314
 numer > 1000:  850
 numer < 5:  215
+"""
+
+""" spl
+
+token_num is : 3296
+sort_token_dict:  [(2786, 19586), (5110, 18579), (469, 16975), (4053, 15855), (2483, 15743), (4684, 15576), (278, 15449), (4774, 14172), (3545, 13594), (4162, 13574)]
+numer > 10:  3205
+numer > 100:  2995
+numer > 1000:  1024
+numer < 5:  54
 """
