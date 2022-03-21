@@ -39,6 +39,7 @@ class Dictionary(object):
                 self.add_symbol(s)
         self.nspecial = len(self.symbols)
 
+
     def __eq__(self, other):
         return self.indices == other.indices
 
@@ -138,6 +139,7 @@ class Dictionary(object):
                 self.symbols.append(word)
                 self.count.append(count)
     
+
     def index(self, sym):
         """Returns the index of the specified symbol"""
         assert isinstance(sym, str)
@@ -161,6 +163,14 @@ class Dictionary(object):
         if append_eos:
             ids[nwords] = self.eos_index
         return ids
+
+
+    def deocde_list(self, tensor_list):
+        print("tensor_list: ", tensor_list)
+        word_line = " ".join([self.__getitem__(w) for w in tensor_list])
+        print("word_line: ", word_line)
+        return word_line
+
     
     @staticmethod
     def _save_vocab_file(tokenized_sent_path, vocab_file):

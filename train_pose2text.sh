@@ -16,7 +16,7 @@
 
 python -m train_pose2text \
     --gpus 1 \
-    --batchSize 8 \
+    --batchSize 128 \
     --data_path "Data/ProgressiveTransformersSLP" \
     --text_path "data/text2gloss/" \
     --vocab_file "Data/ProgressiveTransformersSLP/src_vocab.txt" \

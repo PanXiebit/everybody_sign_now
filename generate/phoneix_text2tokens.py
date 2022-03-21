@@ -14,6 +14,8 @@ from models_phoneix.text2pose_model_ctc import Text2PoseModel
 from configs.train_options import TrainOptions
 from data_phoneix.phoneix_text2pose_data_shift import PhoenixPoseData
 from tqdm import tqdm
+from models_phoneix.point2text_model import Point2textModel
+from data.vocabulary import Dictionary
 
 
 def apply_to_sample(f, sample):
@@ -34,7 +36,6 @@ def apply_to_sample(f, sample):
             return x
 
     return _apply(sample)
-
 
 def move_to_cuda(sample):
 
@@ -61,23 +62,30 @@ text2pose_model =  Text2PoseModel.load_from_checkpoint(vqvae_path, hparams_file=
 text2pose_model.eval()
 
 
-print(opt.data_path)
+text_dict = text2pose_model.text_dict
 
 data = PhoenixPoseData(opt)
 train_loader = data.test_dataloader()
 
 with torch.no_grad():
-    with open("analysis/phoneix_text2tokens.txt", "w") as f:
+    with open("generate/dev.skels", "w") as fs, open("generate/dev.gloss", "w") as fg:
         for batch_idx, batch in tqdm(enumerate(train_loader)):
+            # if batch_idx > 5: break
             batch = move_to_cuda(batch)
-            res_tokens, pred_points = text2pose_model.generate(batch, batch_idx)
-            word_tokens = batch["gloss_id"][0]
+            res_tokens, pred_points = text2pose_model.generate(batch, batch_idx) # [t, 150]
+            t, v = pred_points.shape
+            pred_points = np.concatenate((pred_points, np.ones((t, 1))), axis=1)
+            pred_points = pred_points.reshape(t*(v+1)).tolist()
+            pred_points_line = " ".join([str(w) for w in pred_points])
+            fs.write(pred_points_line + "\n")
+            word_tokens = batch["gloss_id"].view(-1).cpu().numpy().tolist()[:-1]
+            word_line = text_dict.deocde_list(word_tokens)
+            fg.write(word_line + "\n")
 
-            cur_word = word_tokens.cpu().numpy().tolist()
-            cur_word = " ".join([str(w) for w in cur_word])
-            res_tokens = res_tokens.cpu().numpy().tolist()
-            res_tokens = " ".join([str(w) for w in res_tokens])
-            f.write(cur_word + " ||| " + res_tokens + "\n")
+
+
+
+            
                 
 
 

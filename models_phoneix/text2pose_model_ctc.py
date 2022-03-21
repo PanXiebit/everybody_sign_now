@@ -22,6 +22,7 @@ import torchvision
 import cv2
 
 
+
 class Text2PoseModel(pl.LightningModule):
     def __init__(self, args, text_dict, emb_dim=512, block_size=2000):
         super().__init__()
@@ -250,6 +251,7 @@ class Text2PoseModel(pl.LightningModule):
         predicts = einops.rearrange(predicts, " b t n h -> (b t) h n") 
         pred_pose, pred_rhand, pred_lhand = self.vqvae.decode(predicts)
         pred_points = torch.cat([pred_pose, pred_rhand, pred_lhand], dim=-1).detach().cpu().numpy() # [t, 150]
+        
         show_img = []
         for j in range(pred_points.shape[0]):
             frame_joints = pred_points[j]
@@ -260,10 +262,7 @@ class Text2PoseModel(pl.LightningModule):
             show_img.append(im)
         show_img = np.concatenate(show_img, axis=1) # [h, w*16, c]
         cv2.imwrite("Data/predictions/show_gumbel_{}.png".format(batch_idx), show_img)
-        # points = batch["skel_3d"].squeeze(0) # [1, max_len, 150]
-        # print("points: ", points.shape)
-        # exit()
-        return res_tokens
+        return res_tokens, pred_points
         
 
     def vis_token(self, pred_tokens, name):

@@ -34,20 +34,16 @@ class Point2textModel(pl.LightningModule):
 
         self.text_dict = text_dict
 
-        self.points_emb = nn.Linear(150, 512)
-
-        self.conv = nn.Sequential(nn.Conv1d(512, 512, kernel_size=5, stride=1, padding=2), 
-                                   nn.BatchNorm1d(512), 
-                                   nn.LeakyReLU(),
-                                   nn.MaxPool1d(2, 2),
-                                   nn.Conv1d(512, 512, kernel_size=5, stride=1, padding=2),
-                                   nn.BatchNorm1d(512),
-                                   nn.MaxPool1d(2, 2))
-
-        self.vit = Encoder(dim=512, depth=4, heads=8, mlp_dim=2048, dropout = 0.)
+        self.conv1 = nn.Conv2d(3, 32, kernel_size=(3, 3), stride=(1, 3), padding=(1, 0))
+        self.bn1 = nn.BatchNorm1d(64)
+        self.relu = nn.LeakyReLU()
+        self.conv2 = nn.Conv2d(32, 128, kernel_size=5, stride=1, padding=2)
+        self.bn2 = nn.BatchNorm1d(128)
+        self.pool1 = nn.MaxPool2d(2, 2)
+        self.conv3 = nn.Conv2d(128, 512, kernel_size=3, stride=1, padding=1)
+        self.bn1 = nn.BatchNorm1d(512)
 
         self.ctc_out = nn.Linear(512, len(text_dict))
-
         self.ctcLoss = nn.CTCLoss(text_dict.blank(), reduction="mean", zero_infinity=True)
 
         self.decoder_vocab = [chr(x) for x in range(20000, 20000 + len(text_dict))]
@@ -55,31 +51,20 @@ class Point2textModel(pl.LightningModule):
                                                 blank_id=text_dict.blank(),
                                                 num_processes=10)
 
-        self.save_hyperparameters()
-
     def forward(self, batch, mode):
         """[bs, t, 150]
         """
         word_tokens = batch["gloss_id"]
         word_len = batch["gloss_len"]
-        points = batch["skel_3d"]
+
+        points = batch["skel_3d"] # [bs, t, 150]
         skel_len = batch["skel_len"]
-        max_len = max(skel_len)
+        print("points: ", points[0, 0, :])
 
+        points = einops.rearrange(points, "b t (v n) -> b n t v")
+        
 
-        points = self.points_emb(points)
-        points = einops.rearrange(points, "b t h -> b h t")
-        points = self.conv(points) # b h t/4
-        points = einops.rearrange(points, "b h t -> b t h")
-
-        skel_len = skel_len // 4 
-        max_len = max_len // 4
-        mask = self._get_mask(skel_len, max_len, points.device).unsqueeze_(1).unsqueeze_(2)
-
-        # points = self.vit(points, mask)
-
-        # if not (skel_len >= word_len).all():
-        #     print("hah")
+        
 
         logits = self.ctc_out(points)  # [bs, t, vocab_size]
 
@@ -107,7 +92,6 @@ class Point2textModel(pl.LightningModule):
         gloss_logits = F.softmax(logits, dim=-1)
         # print("gloss_logits: ", gloss_logits.shape)  # [bs, sgn_len, gloss_vocab_size]
         # print("skel_len: ", skel_len)
-        skel_len = skel_len // 4
         pred_seq, _, _, out_seq_len = self.decoder.decode(gloss_logits, skel_len)
         # print("pred_seq: ", pred_seq.shape)        # [bs, reg_beam_size, sgn_len]
         # print("out_seq_len: ", out_seq_len)  # [bs, reg_beam_size]
@@ -140,11 +124,6 @@ class Point2textModel(pl.LightningModule):
         self.log('{}/ins'.format("val"), val_err[2] / val_count, prog_bar=True)
         self.log('{}/del'.format("val"), val_err[3] / val_count, prog_bar=True)
         
-        # for g in self.optimizer.param_groups: 
-        #     if self.current_epoch >= 40:           
-        #         g['lr'] = g["lr"] * 0.5
-        
-                # print("Epoch {}, lr {}".format(self.current_epoch, g['lr']))
     
     def _get_mask(self, x_len, size, device):
         pos = torch.arange(0, size).unsqueeze(0).repeat(x_len.size(0), 1).to(device)
@@ -153,9 +132,9 @@ class Point2textModel(pl.LightningModule):
         return mask
 
     def configure_optimizers(self):
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=3e-4, betas=(0.9, 0.999))
-        scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, 3, gamma=0.96, last_epoch=-1)
-        return [self.optimizer], [scheduler]
+        optimizer = torch.optim.Adam(self.parameters(), lr=3e-4, betas=(0.9, 0.999))
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 3, gamma=0.96, last_epoch=-1)
+        return [optimizer], [scheduler]
 
 
     @staticmethod

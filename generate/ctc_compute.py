@@ -10,10 +10,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
 from torchvision.utils import save_image
-from models_phoneix.text2pose_model_ctc import Text2PoseModel
 from configs.train_options import TrainOptions
 from data_phoneix.phoneix_text2pose_data_shift import PhoenixPoseData
 from tqdm import tqdm
+from models_phoneix.point2text_model import Point2textModel
+from data.vocabulary import Dictionary
 
 
 def apply_to_sample(f, sample):
@@ -35,7 +36,6 @@ def apply_to_sample(f, sample):
 
     return _apply(sample)
 
-
 def move_to_cuda(sample):
 
     def _move_to_cuda(tensor):
@@ -51,34 +51,38 @@ parser = pl.Trainer.add_argparse_args(parser)
 opt = TrainOptions(parser).parse()
 print(opt)
 
-opt.data_path = "Data/ProgressiveTransformersSLP"
-opt.vocab_file = "Data/ProgressiveTransformersSLP/src_vocab.txt"
-opt.batchSize = 1
+opt.data_path = "generate/"
 
-vqvae_path = "text2pose_logs/phoneix_seperate/lightning_logs/saved_ver/checkpoints/epoch=39-step=35479.ckpt"
-hparams_file = "text2pose_logs/phoneix_seperate/lightning_logs/saved_ver/hparams.yaml"
-text2pose_model =  Text2PoseModel.load_from_checkpoint(vqvae_path, hparams_file=hparams_file).cuda()
-text2pose_model.eval()
+text_dict = Dictionary()
+text_dict = text_dict.load(opt.vocab_file)
+
+ctc_model = Point2textModel(opt, text_dict)
+
+saved_path = "pose2text_logs/lightning_logs/version_1/checkpoints/epoch=40-step=2295.ckpt"
+hparams_file = "pose2text_logs/lightning_logs/version_1/hparams.yaml"
+ctc_model =  ctc_model.load_from_checkpoint(saved_path, hparams_file=hparams_file).cuda()
 
 
-print(opt.data_path)
+ctc_model.eval()
+
 
 data = PhoenixPoseData(opt)
 train_loader = data.test_dataloader()
 
+
 with torch.no_grad():
-    with open("analysis/phoneix_text2tokens.txt", "w") as f:
-        for batch_idx, batch in tqdm(enumerate(train_loader)):
-            batch = move_to_cuda(batch)
-            res_tokens, pred_points = text2pose_model.generate(batch, batch_idx)
-            word_tokens = batch["gloss_id"][0]
+    val_err, val_correct, val_count = np.zeros([4]), 0, 0
+    for batch_idx, batch in tqdm(enumerate(train_loader)):
+        batch = move_to_cuda(batch)
+        out = ctc_model.validation_step(batch, batch_idx)
 
-            cur_word = word_tokens.cpu().numpy().tolist()
-            cur_word = " ".join([str(w) for w in cur_word])
-            res_tokens = res_tokens.cpu().numpy().tolist()
-            res_tokens = " ".join([str(w) for w in res_tokens])
-            f.write(cur_word + " ||| " + res_tokens + "\n")
-                
+        val_err += out["wer"]
+        val_correct += out["correct"]
+        val_count += out["count"]
 
+    print('{}/acc'.format("val"), val_correct / val_count)
+    print('{}/wer'.format("val"), val_err[0] / val_count)
+    print('{}/sub'.format("val"), val_err[1] / val_count)
+    print('{}/ins'.format("val"), val_err[2] / val_count)
+    print('{}/del'.format("val"), val_err[3] / val_count)
 
- 

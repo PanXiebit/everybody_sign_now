@@ -71,6 +71,8 @@ class PoseDataset(data.Dataset):
                 gloss_ids = text_dict.encode_line(gloss)
                 gloss_len = len(gloss_ids)
                 skels_3d = torch.FloatTensor([float(s) for s in skel_line.strip().split()])
+                # print("len(skels_3d): ", len(skels_3d))
+
                 assert len(skels_3d) % 151 == 0
                 skel_len = len(skels_3d) // 151
                 
