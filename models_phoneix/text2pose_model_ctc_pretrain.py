@@ -35,7 +35,7 @@ class Text2PoseModel(pl.LightningModule):
             raise ValueError("{} is not existed!".format(args.pose_vqvae))
         else:
             print("load vqvae model from {}".format(args.pose_vqvae))
-            self.vqvae =  PoseVitVQVAE.load_from_checkpoint(args.pose_vqvae, hparams_file=args.hparams_file)
+            self.vqvae =  PoseVitVQVAE.load_from_checkpoint(args.pose_vqvae, hparams_file=args.vqvae_hparams_file)
         for p in self.vqvae.parameters():
             p.requires_grad = False
         self.vqvae.codebook._need_init = False
@@ -55,15 +55,16 @@ class Text2PoseModel(pl.LightningModule):
         self.transformer = Transformer(emb_dim=512, depth=6, block_size=2000)
         self.out_linear = nn.Linear(emb_dim, emb_dim*3)
         self.transformer.apply(self.init_bert_weights)
+        
         # backward
-        self.conv1 = nn.Conv2d(256, 256, (5, 3), (1,3), (2,0))
-        self.norm1 = nn.BatchNorm1d(256)
-        self.relu = nn.ReLU()
-        self.pool1 = nn.MaxPool1d(2)
-        self.conv2 = nn.Conv1d(256, 256, 3, 1, 1)
-        self.norm2 = nn.BatchNorm1d(256)
-        self.pool2 = nn.MaxPool1d(2)
-        self.ctc_out = nn.Linear(256, len(text_dict))
+        from .point2text_model import Point2textModel
+        if not os.path.exists(args.ctc_model):
+            raise ValueError("{} is not existed!".format(args.ctc_model))
+        else:
+            print("load ctc model from {}".format(args.ctc_model))
+            self.ctc_model = Point2textModel.load_from_checkpoint(args.ctc_model, hparams_file=args.ctc_hparams_file)
+        for p in self.ctc_model.parameters():
+            p.requires_grad = False
 
         self.ctcLoss = nn.CTCLoss(blank=text_dict.blank(), reduction="mean", zero_infinity=True)
 
@@ -109,14 +110,15 @@ class Text2PoseModel(pl.LightningModule):
         end_len = start_len = 0
         for i in range(bs):
             end_len += skel_len[i]
-            start_len = end_len - skel_len[i]
+            
             cur_out = points_tokens[start_len:end_len].unsqueeze(0)
             cur_out = torch.cat([cur_out, eos_token, pad_token.repeat(1, max_len - skel_len[i], 1)], dim=1)
             tgt_out.append(cur_out)
-
             cur_feat = temporal_feat[start_len:end_len, :].unsqueeze(0)
             cur_feat = torch.cat([bos_feat, cur_feat, pad_feat.repeat(1, max_len - skel_len[i], 1)], dim=1)
             tgt_feat.append(cur_feat)
+
+            start_len = end_len
         
         tgt_out = torch.cat(tgt_out, dim=0)  # [bs, max_len+1, 3]
         tgt_feat = torch.cat(tgt_feat, dim=0) + self.tem_pos_emb[:max_len+1, :] # [bs, max_len+1, emb_dim]
@@ -134,7 +136,7 @@ class Text2PoseModel(pl.LightningModule):
         tgt_no_pad = tgt_out.ne(self.pad_idx)
         ce_loss = F.cross_entropy(logits, tgt_out, ignore_index=self.pad_idx, reduction="sum")
         ce_loss = ce_loss / tgt_no_pad.sum()
-        self.log('{}/ce_loss'.format(mode), ce_loss.detach(), prog_bar=True)
+        self.log('{}_ce_loss'.format(mode), ce_loss.detach(), prog_bar=True)
     
         back_logits = logits_out.clone()
         back_logits = back_logits[:, :-1, :, :-3]   # [bs, max_len, 3, n_codes]
@@ -167,37 +169,29 @@ class Text2PoseModel(pl.LightningModule):
         lhand_rec_loss = torch.abs(lhand - dec_lhand).mean()
 
         rec_loss = pose_rec_loss + rhand_rec_loss + lhand_rec_loss
-        self.log('{}/pose_rec_loss'.format(mode), pose_rec_loss.detach(), prog_bar=True)
-        self.log('{}/rhand_rec_loss'.format(mode), rhand_rec_loss.detach(), prog_bar=True)
-        self.log('{}/lhand_rec_loss'.format(mode), lhand_rec_loss.detach(), prog_bar=True)
-        self.log('{}/rec_loss'.format(mode), rec_loss.detach(), prog_bar=True)
-
+        self.log('{}_pose_rec_loss'.format(mode), pose_rec_loss.detach(), prog_bar=True)
+        self.log('{}_rhand_rec_loss'.format(mode), rhand_rec_loss.detach(), prog_bar=True)
+        self.log('{}_lhand_rec_loss'.format(mode), lhand_rec_loss.detach(), prog_bar=True)
+        self.log('{}_rec_loss'.format(mode), rec_loss.detach(), prog_bar=True)
 
         # ctc loss
-        if self.current_epoch >= 40:
-            x = einops.rearrange(predicts, "b t n h -> b h t n")
-            x = self.conv1(x).squeeze(-1)
-            x = self.norm1(x)
-            x = self.relu(x)
-            x = self.pool1(x)
-            x = self.conv2(x)
-            x = self.norm2(x)
-            x = self.relu(x)
-            x = self.pool2(x)
-            x = einops.rearrange(x, "b h t -> b t h")
-            ctc_logits = self.ctc_out(x)
-
-            lprobs = ctc_logits.log_softmax(-1) # [b t v] 
-            lprobs = einops.rearrange(lprobs, "b t v -> t b v")
+        if self.current_epoch >= 40:    
+            pred_points = torch.cat([dec_pose, dec_rhand, dec_lhand], dim=-1) # [sum(skel_len), 150]
+            pred_points_pad = torch.zeros(bs, max_len, 150).to(pred_points.device)
+            start, end = 0, 0
+            for i in range(bs):
+                end = end + skel_len[i] 
+                pred_points_pad[i, :skel_len[i], :] = pred_points[start:end, :]
+                start = end
             
-            ctc_loss = self.ctcLoss(lprobs.cpu(), word_tokens.cpu(), (skel_len // 4).cpu(), word_len.cpu()).to(lprobs.device)
-            self.log('{}/ctc_loss'.format(mode), ctc_loss.detach(), prog_bar=True)
+            ctc_loss, _ = self.ctc_model(pred_points_pad, skel_len,  word_tokens, word_len, "train")
+            self.log('{}_ctc_loss'.format(mode), ctc_loss.detach(), prog_bar=True)
 
             loss = ce_loss + rec_loss + ctc_loss
         else:
             loss = ce_loss + rec_loss
 
-        self.log('{}/loss'.format(mode), loss.detach(), prog_bar=True)
+        self.log('{}_loss'.format(mode), loss.detach(), prog_bar=True)
 
         if mode == "train" and self.global_step % 200 == 0:
             self.vis(pose, rhand, lhand, mode, "ori_vis")
@@ -214,6 +208,8 @@ class Text2PoseModel(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         self.training_step(batch, batch_idx, "val")
         # self.generate(batch)
+
+
 
     @torch.no_grad()
     def generate(self, batch, batch_idx, total_seq_len=200, temperature = 1., default_batch_size = 1, ):
@@ -326,7 +322,11 @@ class Text2PoseModel(pl.LightningModule):
     def add_model_specific_args(parent_parser):
         parser = argparse.ArgumentParser(parents=[parent_parser], add_help=False)
         parser.add_argument('--pose_vqvae', type=str, default='kinetics_stride4x4x4', help='path to vqvae ckpt, or model name to download pretrained')
-        parser.add_argument('--hparams_file', type=str, default='', help='path to vqvae ckpt, or model name to download pretrained')
+        parser.add_argument('--vqvae_hparams_file', type=str, default='', help='path to vqvae ckpt, or model name to download pretrained')
+
+        parser.add_argument('--ctc_model', type=str, default='kinetics_stride4x4x4', help='path to vqvae ckpt, or model name to download pretrained')
+        parser.add_argument('--ctc_hparams_file', type=str, default='kinetics_stride4x4x4', help='path to vqvae ckpt, or model name to download pretrained')
+
         parser.add_argument('--n_cond_frames', type=int, default=0)
         parser.add_argument('--class_cond', action='store_true')
 

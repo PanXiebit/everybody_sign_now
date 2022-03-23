@@ -68,10 +68,10 @@ class PoseVitVQVAE(pl.LightningModule):
         """
         b, h, n = x.size()
         x = einops.rearrange(x, "b h n-> b n h")
-        x = self.enc_vit(x)
-        pose = self.pose_spl(x[:, 0, :]) # []
-        rhand = self.hand_spl(x[:, 1, :])
-        lhand = self.hand_spl(x[:, 2, :])
+        x = self.enc_vit(x)  # [b n h]
+        pose = self.pose_spl(x[:, 0, :])  # [b, h] -> [b, 24]
+        rhand = self.hand_spl(x[:, 1, :]) # [b, h] -> [b, 63]
+        lhand = self.hand_spl(x[:, 2, :]) # [b, h] -> [b, 63]
 
         return pose, rhand, lhand
 

@@ -21,9 +21,11 @@ python -m train_text2pose \
     --text_path "data/text2gloss/" \
     --vocab_file "Data/ProgressiveTransformersSLP/src_vocab.txt" \
     --pose_vqvae "logs/phoneix_spl_seperate_SeqLen_1/lightning_logs/version_3/checkpoints/epoch=123-step=50095.ckpt" \
-    --hparams_file "logs/phoneix_spl_seperate_SeqLen_1/lightning_logs/version_3/hparams.yaml" \
+    --vqvae_hparams_file "logs/phoneix_spl_seperate_SeqLen_1/lightning_logs/version_3/hparams.yaml" \
     --resume_ckpt "" \
-    --default_root_dir "text2pose_logs/phoneix_seperate" \
+    --default_root_dir "/Dataset/everybody_sign_now_experiments/text2pose_logs/ctc_nat" \
     --max_steps 300000 \
     --max_frames_num 200 \
     --gpu_ids "0" \
+    --ctc_model "pose2text_logs/lightning_logs/version_1/checkpoints/epoch=28-step=1623.ckpt" \
+    --ctc_hparams_file "pose2text_logs/lightning_logs/version_1/hparams.yaml" \

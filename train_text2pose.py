@@ -3,7 +3,7 @@ from configs.train_options import TrainOptions
 import pytorch_lightning as pl
 import argparse
 
-from models_phoneix.text2pose_model_ctc import Text2PoseModel
+from models_phoneix.text2pose_model_ctc_pretrain_nat import Text2PoseModel
 from pytorch_lightning.callbacks import ModelCheckpoint
 from data_phoneix.phoneix_text2pose_data_shift import PhoenixPoseData
 from util.util import CheckpointEveryNSteps
@@ -35,7 +35,7 @@ def main():
     # print(model)
     # exit()
     callbacks = []
-    callbacks.append(ModelCheckpoint(monitor="val/loss", filename='{epoch}-{step}', save_top_k=1))
+    callbacks.append(ModelCheckpoint(monitor="val_ce_loss", filename='{epoch}-{step}-{val_ce_loss:.4f}-{val_rec_loss:.4f}', save_top_k=-1))
 
     kwargs = dict()
     if opt.gpus > 1:

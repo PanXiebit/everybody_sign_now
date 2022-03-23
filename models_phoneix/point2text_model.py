@@ -42,11 +42,13 @@ class Point2textModel(pl.LightningModule):
                                    nn.MaxPool1d(2, 2),
                                    nn.Conv1d(512, 512, kernel_size=5, stride=1, padding=2),
                                    nn.BatchNorm1d(512),
-                                   nn.MaxPool1d(2, 2))
+                                   nn.MaxPool1d(2, 2),
+                                   nn.Conv1d(512, 1024, kernel_size=3, stride=1, padding=1),
+                                   nn.BatchNorm1d(1024))
 
-        self.vit = Encoder(dim=512, depth=4, heads=8, mlp_dim=2048, dropout = 0.)
+        # self.vit = Encoder(dim=512, depth=4, heads=8, mlp_dim=2048, dropout = 0.)
 
-        self.ctc_out = nn.Linear(512, len(text_dict))
+        self.ctc_out = nn.Linear(1024, len(text_dict))
 
         self.ctcLoss = nn.CTCLoss(text_dict.blank(), reduction="mean", zero_infinity=True)
 
@@ -57,16 +59,11 @@ class Point2textModel(pl.LightningModule):
 
         self.save_hyperparameters()
 
-    def forward(self, batch, mode):
+    def forward(self, points, skel_len,  word_tokens, word_len, mode):
         """[bs, t, 150]
         """
-        word_tokens = batch["gloss_id"]
-        word_len = batch["gloss_len"]
-        points = batch["skel_3d"]
-        skel_len = batch["skel_len"]
+        
         max_len = max(skel_len)
-
-
         points = self.points_emb(points)
         points = einops.rearrange(points, "b t h -> b h t")
         points = self.conv(points) # b h t/4
@@ -88,19 +85,24 @@ class Point2textModel(pl.LightningModule):
         
         loss = self.ctcLoss(lprobs.cpu(), word_tokens.cpu(), skel_len.cpu(), word_len.cpu()).to(lprobs.device)
         self.log('{}/loss'.format(mode), loss.detach(), prog_bar=True)
-
-        
         return loss, logits
 
     def training_step(self, batch):
-        loss, _ = self.forward(batch, "train")
+        word_tokens = batch["gloss_id"]
+        word_len = batch["gloss_len"]
+        points = batch["skel_3d"]
+        skel_len = batch["skel_len"]
+
+        loss, _ = self.forward(points, skel_len,  word_tokens, word_len, "train")
         return loss
     
     def validation_step(self, batch, batch_idx):
-        _, logits = self.forward(batch, "val") # [bs, t, vocab_size]
-        skel_len = batch["skel_len"]
         gloss_id = batch["gloss_id"]
         gloss_len = batch["gloss_len"]
+        points = batch["skel_3d"]
+        skel_len = batch["skel_len"]
+        
+        _, logits = self.forward(points, skel_len,  gloss_id, gloss_len, "val") # [bs, t, vocab_size]
         bs = skel_len.size(0)
         
         # TODO! recognition prediction and compute wer

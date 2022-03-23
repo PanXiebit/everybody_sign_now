@@ -35,7 +35,7 @@ class Text2PoseModel(pl.LightningModule):
             raise ValueError("{} is not existed!".format(args.pose_vqvae))
         else:
             print("load vqvae model from {}".format(args.pose_vqvae))
-            self.vqvae =  PoseVitVQVAE.load_from_checkpoint(args.pose_vqvae, hparams_file=args.hparams_file)
+            self.vqvae =  PoseVitVQVAE.load_from_checkpoint(args.pose_vqvae, hparams_file=args.vqvae_hparams_file)
         for p in self.vqvae.parameters():
             p.requires_grad = False
         self.vqvae.codebook._need_init = False
@@ -44,9 +44,8 @@ class Text2PoseModel(pl.LightningModule):
         self.src_embedding = nn.Embedding(len(text_dict), emb_dim, padding_idx=text_dict.pad())
         self.src_embedding.apply(self.init_bert_weights)
         self.pad_idx = self.vqvae.args.n_codes
-        self.bos_idx = self.vqvae.args.n_codes + 1
-        self.eos_idx = self.vqvae.args.n_codes + 2
-        self.tgt_embedding = nn.Embedding(self.vqvae.args.n_codes + 3, emb_dim, padding_idx=self.vqvae.args.n_codes)
+        self.mask_idx = self.vqvae.args.n_codes + 1
+        self.tgt_embedding = nn.Embedding(self.vqvae.args.n_codes + 2, emb_dim, padding_idx=self.vqvae.args.n_codes)
         self.tgt_embedding.apply(self.init_bert_weights)
 
         self.tem_pos_emb = nn.Parameter(torch.zeros(block_size, emb_dim))
@@ -55,15 +54,18 @@ class Text2PoseModel(pl.LightningModule):
         self.transformer = Transformer(emb_dim=512, depth=6, block_size=2000)
         self.out_linear = nn.Linear(emb_dim, emb_dim*3)
         self.transformer.apply(self.init_bert_weights)
+
+        self.random = np.random.RandomState(1234)
+        
         # backward
-        self.conv1 = nn.Conv2d(256, 256, (5, 3), (1,3), (2,0))
-        self.norm1 = nn.BatchNorm1d(256)
-        self.relu = nn.ReLU()
-        self.pool1 = nn.MaxPool1d(2)
-        self.conv2 = nn.Conv1d(256, 256, 3, 1, 1)
-        self.norm2 = nn.BatchNorm1d(256)
-        self.pool2 = nn.MaxPool1d(2)
-        self.ctc_out = nn.Linear(256, len(text_dict))
+        from .point2text_model import Point2textModel
+        if not os.path.exists(args.ctc_model):
+            raise ValueError("{} is not existed!".format(args.ctc_model))
+        else:
+            print("load ctc model from {}".format(args.ctc_model))
+            self.ctc_model = Point2textModel.load_from_checkpoint(args.ctc_model, hparams_file=args.ctc_hparams_file)
+        for p in self.ctc_model.parameters():
+            p.requires_grad = False
 
         self.ctcLoss = nn.CTCLoss(blank=text_dict.blank(), reduction="mean", zero_infinity=True)
 
@@ -92,73 +94,80 @@ class Text2PoseModel(pl.LightningModule):
         src_feat = self.src_embedding(word_tokens) + self.tem_pos_emb[:src_len, :]
         src_mask = word_tokens.ne(self.text_dict.pad()).unsqueeze_(1).unsqueeze_(2)
 
-        point_feat = self.tgt_embedding(points_tokens) # [sum(skel_len), 3, emb_dim]
-        temporal_feat = point_feat + self.spa_pos_emb  # [sum(skel_len), 3, emb_dim]
-        temporal_feat = temporal_feat.sum(-2) # [sum(skel_len), emb_dim]
-
         max_len = max(skel_len)
+        pad_token = points_tokens.new(1, 3).fill_(self.pad_idx)
         
-        pad_feat = self.tgt_embedding.weight[self.pad_idx:self.pad_idx+1, :].unsqueeze_(1)
-        bos_feat = self.tgt_embedding.weight[self.bos_idx:self.bos_idx+1, :].unsqueeze_(1)
-        
-        eos_token = points_tokens.new(1, 1, 3).fill_(self.eos_idx)
-        pad_token = points_tokens.new(1, 1, 3).fill_(self.pad_idx)
-        
+        min_num_masks = 1
+        tgt_inp = []
         tgt_out = []
-        tgt_feat = []
         end_len = start_len = 0
         for i in range(bs):
-            end_len += skel_len[i]
-            start_len = end_len - skel_len[i]
-            cur_out = points_tokens[start_len:end_len].unsqueeze(0)
-            cur_out = torch.cat([cur_out, eos_token, pad_token.repeat(1, max_len - skel_len[i], 1)], dim=1)
-            tgt_out.append(cur_out)
+            cur_len = skel_len[i].item()
+            end_len += cur_len
+            cur_point = points_tokens[start_len:end_len] # [cur_len, 3]
+            cur_point = cur_point.view(-1)  # [cur_len * 3]
 
-            cur_feat = temporal_feat[start_len:end_len, :].unsqueeze(0)
-            cur_feat = torch.cat([bos_feat, cur_feat, pad_feat.repeat(1, max_len - skel_len[i], 1)], dim=1)
-            tgt_feat.append(cur_feat)
-        
-        tgt_out = torch.cat(tgt_out, dim=0)  # [bs, max_len+1, 3]
-        tgt_feat = torch.cat(tgt_feat, dim=0) + self.tem_pos_emb[:max_len+1, :] # [bs, max_len+1, emb_dim]
+            sample_size = self.random.randint(min_num_masks, cur_len*3)
+            ind = self.random.choice(cur_len*3, size=sample_size, replace=False)
 
-        tgt_mask = self._get_mask(skel_len+1, max_len+1, tgt_feat.device).unsqueeze_(1).unsqueeze_(2)
+            cur_inp = cur_point.clone()
+            cur_inp[ind] = self.mask_idx
+            cur_inp = cur_inp.view(cur_len, 3)
+            cur_inp = torch.cat([cur_inp, pad_token.repeat(max_len - cur_len, 1)], dim=0) # [max_len, 3]
+            tgt_inp.append(cur_inp.unsqueeze_(0))
+
+            cur_out = torch.ones_like(cur_point).to(cur_point.device) * self.pad_idx
+            cur_out[ind] = cur_point[ind]
+            cur_out = cur_out.view(cur_len, 3)
+            cur_out = torch.cat([cur_out, pad_token.repeat(max_len - cur_len, 1)], dim=0) # [max_len, 3]
+            tgt_out.append(cur_out.unsqueeze_(0)) # [1, max_len, 3]
+            start_len = end_len
+
+        tgt_inp = torch.cat(tgt_inp, dim=0)  # [bs, max_len, 3]
+        tgt_out = torch.cat(tgt_out, dim=0)  # [bs, max_len, 3]
+
+        # spatial position encoding
+        tgt_feat = self.tgt_embedding(tgt_inp) + self.spa_pos_emb # [bs, max_len, 3, emb_dim]
+        tgt_feat = tgt_feat.sum(-2)
+
+        # temporal position encoding
+        tgt_feat = tgt_feat + self.tem_pos_emb[:max_len, :] # [bs, max_len, emb_dim]
         
-        pred_emb = self.transformer(src_feat, src_mask, tgt_feat, tgt_mask) # [bs, max_len+1, emd_dim]
-        # pred_emb = pred_emb.unsqueeze(-2).repeat(1, 1, 3, 1)  + self.spa_pos_emb # [bs, max_len+1, 3, emd_dim]
+        tgt_mask = self._get_mask(skel_len, max_len, tgt_feat.device).unsqueeze_(1).unsqueeze_(2)
+        
+        pred_emb = self.transformer(src_feat, src_mask, tgt_feat, tgt_mask) # [bs, max_len, emd_dim]
         pred_emb = self.out_linear(pred_emb) # [bs, max_len+1, 3*emd_dim]
+
         pred_emb = einops.rearrange(pred_emb, "b t (n h) -> b t n h", n=3)
-        logits_out = torch.matmul(pred_emb, self.tgt_embedding.weight.t()) # [bs, max_len+1, 3, n_codes+3]
+        logits_out = torch.matmul(pred_emb, self.tgt_embedding.weight.t()) # [bs, max_len, 3, n_codes+2]
 
         logits = logits_out.view(-1, logits_out.size(-1))
         tgt_out = tgt_out.view(-1)
         tgt_no_pad = tgt_out.ne(self.pad_idx)
         ce_loss = F.cross_entropy(logits, tgt_out, ignore_index=self.pad_idx, reduction="sum")
         ce_loss = ce_loss / tgt_no_pad.sum()
-        self.log('{}/ce_loss'.format(mode), ce_loss.detach(), prog_bar=True)
-    
-        back_logits = logits_out.clone()
-        back_logits = back_logits[:, :-1, :, :-3]   # [bs, max_len, 3, n_codes]
-        predicts = F.gumbel_softmax(back_logits, tau=0.2, hard=True) # [bs, max_len+1, 3, n_codes]
-        # predicts_feat = torch.matmul(predicts, self.tgt_embedding.weight) # [bs, max_len+1, 3, emb_dim]
-        predicts = torch.matmul(predicts, self.vqvae.codebook.embeddings)  # [bs, max_len, 3, emb_dim]
-
+        self.log("{}_no_pad".format(mode), tgt_no_pad.sum().float(), prog_bar=True)
+        self.log('{}_ce_loss'.format(mode), ce_loss.detach(), prog_bar=True)
         
-        # recons loss
+        back_logits = logits_out.clone()
+        back_logits = back_logits[..., :-2]   # [bs, max_len, 3, n_codes]
+        predicts = F.gumbel_softmax(back_logits, tau=0.2, hard=True) # [bs, max_len, 3, n_codes]
+        predicts = torch.matmul(predicts, self.vqvae.codebook.embeddings)  # [bs, max_len, 3, emb_dim]
         rec_predicts = []
         points = batch["skel_3d"] # [bs, max_len, 150]
         ori_points = []       
         for i in range(bs):
-            cur_points = points[i, :skel_len[i], :] 
+            cur_points = points[i, :skel_len[i].item(), :] 
             ori_points.append(cur_points)
-            cur_pred = predicts[i, :skel_len[i], :, :]
+            cur_pred = predicts[i, :skel_len[i].item(), :, :]
             rec_predicts.append(cur_pred)
         ori_points = torch.cat(ori_points, dim=0) # [sum(skel_len), 150]
         rec_predicts = torch.cat(rec_predicts, dim=0) # [sum(skel_len), 3, emb_dim]
         
+        # reconstruction loss
         pose = ori_points[:, :24]
         rhand = ori_points[:, 24:24+63]
         lhand = ori_points[:, 87:150]
-        
         rec_predicts = einops.rearrange(rec_predicts, "b n h -> b h n")
         dec_pose, dec_rhand, dec_lhand = self.vqvae.decode(rec_predicts)  # [sum(skel_len), 24], [sum(skel_len), 63]
 
@@ -167,37 +176,29 @@ class Text2PoseModel(pl.LightningModule):
         lhand_rec_loss = torch.abs(lhand - dec_lhand).mean()
 
         rec_loss = pose_rec_loss + rhand_rec_loss + lhand_rec_loss
-        self.log('{}/pose_rec_loss'.format(mode), pose_rec_loss.detach(), prog_bar=True)
-        self.log('{}/rhand_rec_loss'.format(mode), rhand_rec_loss.detach(), prog_bar=True)
-        self.log('{}/lhand_rec_loss'.format(mode), lhand_rec_loss.detach(), prog_bar=True)
-        self.log('{}/rec_loss'.format(mode), rec_loss.detach(), prog_bar=True)
-
+        self.log('{}_pose_rec_loss'.format(mode), pose_rec_loss.detach(), prog_bar=True)
+        self.log('{}_rhand_rec_loss'.format(mode), rhand_rec_loss.detach(), prog_bar=True)
+        self.log('{}_lhand_rec_loss'.format(mode), lhand_rec_loss.detach(), prog_bar=True)
+        self.log('{}_rec_loss'.format(mode), rec_loss.detach(), prog_bar=True)
 
         # ctc loss
-        if self.current_epoch >= 40:
-            x = einops.rearrange(predicts, "b t n h -> b h t n")
-            x = self.conv1(x).squeeze(-1)
-            x = self.norm1(x)
-            x = self.relu(x)
-            x = self.pool1(x)
-            x = self.conv2(x)
-            x = self.norm2(x)
-            x = self.relu(x)
-            x = self.pool2(x)
-            x = einops.rearrange(x, "b h t -> b t h")
-            ctc_logits = self.ctc_out(x)
-
-            lprobs = ctc_logits.log_softmax(-1) # [b t v] 
-            lprobs = einops.rearrange(lprobs, "b t v -> t b v")
+        if self.current_epoch >= 40:    
+            pred_points = torch.cat([dec_pose, dec_rhand, dec_lhand], dim=-1) # [sum(skel_len), 150]
+            pred_points_pad = torch.zeros(bs, max_len, 150).to(pred_points.device)
+            start, end = 0, 0
+            for i in range(bs):
+                end += skel_len[i].item()
+                pred_points_pad[i, :skel_len[i].item(), :] = pred_points[start:end, :]
+                start = end
             
-            ctc_loss = self.ctcLoss(lprobs.cpu(), word_tokens.cpu(), (skel_len // 4).cpu(), word_len.cpu()).to(lprobs.device)
-            self.log('{}/ctc_loss'.format(mode), ctc_loss.detach(), prog_bar=True)
+            ctc_loss, _ = self.ctc_model(pred_points_pad, skel_len,  word_tokens, word_len, "train")
+            self.log('{}_ctc_loss'.format(mode), ctc_loss.detach(), prog_bar=True)
 
             loss = ce_loss + rec_loss + ctc_loss
         else:
             loss = ce_loss + rec_loss
 
-        self.log('{}/loss'.format(mode), loss.detach(), prog_bar=True)
+        self.log('{}_loss'.format(mode), loss.detach(), prog_bar=True)
 
         if mode == "train" and self.global_step % 200 == 0:
             self.vis(pose, rhand, lhand, mode, "ori_vis")
@@ -213,7 +214,7 @@ class Text2PoseModel(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         self.training_step(batch, batch_idx, "val")
-        # self.generate(batch)
+
 
     @torch.no_grad()
     def generate(self, batch, batch_idx, total_seq_len=200, temperature = 1., default_batch_size = 1, ):
@@ -246,11 +247,7 @@ class Text2PoseModel(pl.LightningModule):
             tgt_feat = torch.cat([tgt_feat, sampled_feat], dim=-2)  # [1, t+1, emb_dim]
         res_tokens =  torch.cat(res_tokens, dim=1).view(-1) # [1, t, 3]
         
-        # self.vis_token(res_tokens, "pred")
-        # print("res_tokens: ", res_tokens.shape, res_tokens)
-
         res_logits = torch.cat(res_logits, dim=1)[..., :-3].contiguous() # [1,t, 3, vocab_size]
-        # print("res_logits: ", res_logits.shape)
         predicts = F.gumbel_softmax(res_logits, tau=0.1, hard=False) # [1, t, 3, n_codes]
         predicts = torch.matmul(predicts, self.vqvae.codebook.embeddings)  # [1, t, 3, emb_dim]
         predicts = einops.rearrange(predicts, " b t n h -> (b t) h n") 
@@ -326,7 +323,11 @@ class Text2PoseModel(pl.LightningModule):
     def add_model_specific_args(parent_parser):
         parser = argparse.ArgumentParser(parents=[parent_parser], add_help=False)
         parser.add_argument('--pose_vqvae', type=str, default='kinetics_stride4x4x4', help='path to vqvae ckpt, or model name to download pretrained')
-        parser.add_argument('--hparams_file', type=str, default='', help='path to vqvae ckpt, or model name to download pretrained')
+        parser.add_argument('--vqvae_hparams_file', type=str, default='', help='path to vqvae ckpt, or model name to download pretrained')
+
+        parser.add_argument('--ctc_model', type=str, default='kinetics_stride4x4x4', help='path to vqvae ckpt, or model name to download pretrained')
+        parser.add_argument('--ctc_hparams_file', type=str, default='kinetics_stride4x4x4', help='path to vqvae ckpt, or model name to download pretrained')
+
         parser.add_argument('--n_cond_frames', type=int, default=0)
         parser.add_argument('--class_cond', action='store_true')
 
@@ -390,12 +391,13 @@ class Transformer(nn.Module):
     def forward(self, src_feat, src_mask, tgt_feat, tgt_mask): 
         enc_out = self.encoder(src_feat, src_mask)
         bs, t, _ = tgt_feat.size()
-        casual_mask = self.casual_mask[:, :, :t, :t]
-        if tgt_mask is not None:
-            pad_future_mask = casual_mask & tgt_mask
-        else:
-            pad_future_mask = casual_mask
-        dec_out = self.decoder(tgt_feat, pad_future_mask, enc_out, src_mask)
+        # casual_mask = self.casual_mask[:, :, :t, :t]
+        # if tgt_mask is not None:
+        #     pad_future_mask = casual_mask & tgt_mask
+        # else:
+        #     pad_future_mask = casual_mask
+        
+        dec_out = self.decoder(tgt_feat, tgt_mask, enc_out, src_mask)
         return dec_out
         
 

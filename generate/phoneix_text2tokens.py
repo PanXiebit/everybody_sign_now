@@ -10,7 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
 from torchvision.utils import save_image
-from models_phoneix.text2pose_model_ctc import Text2PoseModel
+from models_phoneix.text2pose_model_ctc_pretrain import Text2PoseModel
 from configs.train_options import TrainOptions
 from data_phoneix.phoneix_text2pose_data_shift import PhoenixPoseData
 from tqdm import tqdm
@@ -56,8 +56,10 @@ opt.data_path = "Data/ProgressiveTransformersSLP"
 opt.vocab_file = "Data/ProgressiveTransformersSLP/src_vocab.txt"
 opt.batchSize = 1
 
-vqvae_path = "text2pose_logs/phoneix_seperate/lightning_logs/saved_ver/checkpoints/epoch=39-step=35479.ckpt"
-hparams_file = "text2pose_logs/phoneix_seperate/lightning_logs/saved_ver/hparams.yaml"
+# vqvae_path = "text2pose_logs/phoneix_seperate/lightning_logs/saved_ver/checkpoints/epoch=39-step=35479.ckpt"
+# vqvae_path = "text2pose_logs/phoneix_seperate/lightning_logs/with_ctc/checkpoints/epoch=279-step=248359.ckpt"
+vqvae_path = "/Dataset/everybody_sign_now_experiments/text2pose_logs/ctc_pretrain/lightning_logs/version_1/checkpoints/epoch=194-step=172964-val_ce_loss=3.4952-val_rec_loss=0.0889.ckpt"
+hparams_file = "/Dataset/everybody_sign_now_experiments/text2pose_logs/ctc_pretrain/lightning_logs/version_1/hparams.yaml"
 text2pose_model =  Text2PoseModel.load_from_checkpoint(vqvae_path, hparams_file=hparams_file).cuda()
 text2pose_model.eval()
 
@@ -81,6 +83,8 @@ with torch.no_grad():
             word_tokens = batch["gloss_id"].view(-1).cpu().numpy().tolist()[:-1]
             word_line = text_dict.deocde_list(word_tokens)
             fg.write(word_line + "\n")
+
+
 
 
 

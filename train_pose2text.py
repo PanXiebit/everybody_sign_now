@@ -35,7 +35,7 @@ def main():
     #     hparams_file="lightning_logs/seqlen_16_with_anchor//hparams.yaml")
     
     callbacks = []
-    callbacks.append(ModelCheckpoint(monitor="val/wer", filename='{epoch}-{step}', save_top_k=5, mode="min"))
+    callbacks.append(ModelCheckpoint(monitor="val/wer", filename='{epoch}-{step}', save_top_k=1, mode="min"))
 
     kwargs = dict()
     if opt.gpus > 1:

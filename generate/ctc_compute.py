@@ -58,7 +58,7 @@ text_dict = text_dict.load(opt.vocab_file)
 
 ctc_model = Point2textModel(opt, text_dict)
 
-saved_path = "pose2text_logs/lightning_logs/version_1/checkpoints/epoch=40-step=2295.ckpt"
+saved_path = "pose2text_logs/lightning_logs/version_1/checkpoints/epoch=28-step=1623.ckpt"
 hparams_file = "pose2text_logs/lightning_logs/version_1/hparams.yaml"
 ctc_model =  ctc_model.load_from_checkpoint(saved_path, hparams_file=hparams_file).cuda()
 
@@ -74,6 +74,8 @@ with torch.no_grad():
     val_err, val_correct, val_count = np.zeros([4]), 0, 0
     for batch_idx, batch in tqdm(enumerate(train_loader)):
         batch = move_to_cuda(batch)
+        bs, t, v = batch["skel_3d"].size()
+        if t < 4: continue
         out = ctc_model.validation_step(batch, batch_idx)
 
         val_err += out["wer"]
