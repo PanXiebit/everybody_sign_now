@@ -16,12 +16,12 @@
 
 python -m train_pose2text \
     --gpus 1 \
-    --batchSize 128 \
+    --batchSize 12 \
+    --n_codes 2048 \
     --data_path "Data/ProgressiveTransformersSLP" \
-    --text_path "data/text2gloss/" \
     --vocab_file "Data/ProgressiveTransformersSLP/src_vocab.txt" \
     --resume_ckpt "" \
-    --default_root_dir "pose2text_logs/" \
+    --default_root_dir "/Dataset/everybody_sign_now_experiments/pose2text_logs/test" \
     --max_steps 300000 \
     --max_frames_num 200 \
     --gpu_ids "0" \

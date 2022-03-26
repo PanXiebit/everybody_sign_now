@@ -75,7 +75,7 @@ class PoseDataset(data.Dataset):
 
                 assert len(skels_3d) % 151 == 0
                 skel_len = len(skels_3d) // 151
-                
+
                 self.gloss.append(gloss)
                 self.gloss_id.append(gloss_ids)         
                 self.skel_3d.append(skels_3d)         

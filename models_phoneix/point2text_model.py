@@ -26,6 +26,9 @@ from collections import defaultdict
 from util.wer import get_wer_delsubins
 import ctcdecode
 from itertools import groupby
+from util.phoneix_cleanup import clean_phoenix_2014
+from util.metrics import wer_single
+
 
 
 class Point2textModel(pl.LightningModule):
@@ -42,13 +45,11 @@ class Point2textModel(pl.LightningModule):
                                    nn.MaxPool1d(2, 2),
                                    nn.Conv1d(512, 512, kernel_size=5, stride=1, padding=2),
                                    nn.BatchNorm1d(512),
-                                   nn.MaxPool1d(2, 2),
-                                   nn.Conv1d(512, 1024, kernel_size=3, stride=1, padding=1),
-                                   nn.BatchNorm1d(1024))
+                                   nn.MaxPool1d(2, 2))
 
-        # self.vit = Encoder(dim=512, depth=4, heads=8, mlp_dim=2048, dropout = 0.)
+        self.vit = Encoder(dim=512, depth=4, heads=8, mlp_dim=2048, dropout = 0.)
 
-        self.ctc_out = nn.Linear(1024, len(text_dict))
+        self.ctc_out = nn.Linear(512, len(text_dict))
 
         self.ctcLoss = nn.CTCLoss(text_dict.blank(), reduction="mean", zero_infinity=True)
 
@@ -73,7 +74,7 @@ class Point2textModel(pl.LightningModule):
         max_len = max_len // 4
         mask = self._get_mask(skel_len, max_len, points.device).unsqueeze_(1).unsqueeze_(2)
 
-        # points = self.vit(points, mask)
+        points = self.vit(points, mask)
 
         # if not (skel_len >= word_len).all():
         #     print("hah")
@@ -117,31 +118,53 @@ class Point2textModel(pl.LightningModule):
         err_delsubins = np.zeros([4])
         count = 0
         correct = 0
+        total_error = total_del = total_ins = total_sub = total_ref_len = 0
         for i, length in enumerate(gloss_len):
-            ref = gloss_id[i][:length].tolist()
-            hyp = [x[0] for x in groupby(pred_seq[i][0][:out_seq_len[i][0]].tolist())]
-            # print("ref: ", ref)
-            # print("hyp: ", hyp)
+            ref = gloss_id[i][:length].tolist()[:-1]
+            hyp = [x[0] for x in groupby(pred_seq[i][0][:out_seq_len[i][0]].tolist())][:-1]
+            ref_sent = clean_phoenix_2014(self.text_dict.deocde_list(ref))
+            hyp_sent = clean_phoenix_2014(self.text_dict.deocde_list(hyp))
+            # hyp = ref
             # decoded_dict[vname[i]] = (ref, hyp)
             correct += int(ref == hyp)
             err = get_wer_delsubins(ref, hyp)
             err_delsubins += np.array(err)
             count += 1
-        return dict(wer=err_delsubins, correct=correct, count=count)
+
+            res = wer_single(ref_sent, hyp_sent)
+            total_error += res["num_err"]
+            total_del += res["num_del"]
+            total_ins += res["num_ins"]
+            total_sub += res["num_sub"]
+            total_ref_len += res["num_ref"]
+
+        return dict(wer=err_delsubins, correct=correct, count=count, 
+                    total_error=total_error, total_del=total_del, total_ins=total_ins, total_sub=total_sub, total_ref_len=total_ref_len)
 
     def validation_epoch_end(self, outputs) -> None:
         val_err, val_correct, val_count = np.zeros([4]), 0, 0
+        total_error = total_del = total_ins = total_sub = total_ref_len = 0
         for out in outputs:
             val_err += out["wer"]
             val_correct += out["correct"]
             val_count += out["count"]
+            total_error += out["total_error"]
+            total_del += out["total_del"]
+            total_ins += out["total_ins"]
+            total_sub += out["total_sub"]
+            total_ref_len += out["total_ref_len"]
+
+        self.log('{}_wer2'.format("val"), total_error / total_ref_len, prog_bar=True)
+        self.log('{}/sub2'.format("val"), total_sub / total_ref_len, prog_bar=True)
+        self.log('{}/ins2'.format("val"), total_ins / total_ref_len, prog_bar=True)
+        self.log('{}/del2'.format("val"), total_del / total_ref_len, prog_bar=True)
 
         self.log('{}/acc'.format("val"), val_correct / val_count, prog_bar=True)
-        self.log('{}/wer'.format("val"), val_err[0] / val_count, prog_bar=True)
+        self.log('{}_wer'.format("val"), val_err[0] / val_count, prog_bar=True)
         self.log('{}/sub'.format("val"), val_err[1] / val_count, prog_bar=True)
         self.log('{}/ins'.format("val"), val_err[2] / val_count, prog_bar=True)
         self.log('{}/del'.format("val"), val_err[3] / val_count, prog_bar=True)
-        
+  
         # for g in self.optimizer.param_groups: 
         #     if self.current_epoch >= 40:           
         #         g['lr'] = g["lr"] * 0.5
@@ -155,7 +178,7 @@ class Point2textModel(pl.LightningModule):
         return mask
 
     def configure_optimizers(self):
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=3e-4, betas=(0.9, 0.999))
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=1e-4, betas=(0.9, 0.999))
         scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, 3, gamma=0.96, last_epoch=-1)
         return [self.optimizer], [scheduler]
 

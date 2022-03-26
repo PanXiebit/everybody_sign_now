@@ -24,7 +24,7 @@ from modules.mask_strategy import *
 
 
 class Text2PoseModel(pl.LightningModule):
-    def __init__(self, args, text_dict, emb_dim=512, block_size=2000):
+    def __init__(self, args, text_dict, emb_dim=256, block_size=2000):
         super().__init__()
         self.args = args
         self.text_dict = text_dict
@@ -45,13 +45,16 @@ class Text2PoseModel(pl.LightningModule):
         self.src_embedding.apply(self.init_bert_weights)
         self.pad_idx = self.vqvae.args.n_codes
         self.mask_idx = self.vqvae.args.n_codes + 1
-        self.tgt_embedding = nn.Embedding(self.vqvae.args.n_codes + 2, emb_dim, padding_idx=self.vqvae.args.n_codes)
-        self.tgt_embedding.apply(self.init_bert_weights)
+        
+        codebook_embed = self.vqvae.codebook.embeddings
+        mask_and_pad = nn.Parameter(torch.zeros(2, emb_dim))
+        self.tgt_embedding = nn.Embedding(self.vqvae.args.n_codes + 2, emb_dim, padding_idx=self.vqvae.args.n_codes, )
+        self.tgt_embedding.weight.data = torch.cat([codebook_embed, mask_and_pad])
 
         self.tem_pos_emb = nn.Parameter(torch.zeros(block_size, emb_dim))
         self.spa_pos_emb = nn.Parameter(torch.zeros(3, emb_dim))
 
-        self.transformer = Transformer(emb_dim=512, depth=6, block_size=2000)
+        self.transformer = Transformer(emb_dim=emb_dim, depth=6, block_size=2000)
         self.out_linear = nn.Linear(emb_dim, emb_dim*3)
         self.transformer.apply(self.init_bert_weights)
 
@@ -89,6 +92,79 @@ class Text2PoseModel(pl.LightningModule):
         if isinstance(module, nn.Linear) and module.bias is not None:
             module.bias.data.zero_()
 
+
+    def get_loss_and_logits(self, src_feat, src_mask, tgt_inp, tgt_out, skel_len, mode, name, points_tokens, batch, vis_func, vis_token_func):
+        max_len = max(skel_len)
+        # spatial position encoding
+        tgt_feat = self.tgt_embedding(tgt_inp) + self.spa_pos_emb # [bs, max_len, 3, emb_dim]
+        tgt_feat = tgt_feat.sum(-2)
+        # temporal position encoding
+        tgt_feat = tgt_feat + self.tem_pos_emb[:max_len, :] # [bs, max_len, emb_dim]
+        tgt_mask = self._get_mask(skel_len, max_len, tgt_feat.device).unsqueeze_(1).unsqueeze_(2)
+        
+        pred_emb = self.transformer(src_feat, src_mask, tgt_feat, tgt_mask) # [bs, max_len, emd_dim]
+        pred_emb = self.out_linear(pred_emb) # [bs, max_len+1, 3*emd_dim]
+
+        pred_emb = einops.rearrange(pred_emb, "b t (n h) -> b t n h", n=3)
+        logits_out = torch.matmul(pred_emb, self.tgt_embedding.weight.t()) # [bs, max_len, 3, n_codes+2]
+
+        logits = logits_out.view(-1, logits_out.size(-1))
+        tgt_out = tgt_out.view(-1)
+        tgt_no_pad = tgt_out.ne(self.pad_idx)
+        ce_loss = F.cross_entropy(logits, tgt_out, ignore_index=self.pad_idx, reduction="sum")
+        ce_loss = ce_loss / tgt_no_pad.sum()
+        self.log("{}/{}_no_pad".format(mode, name), tgt_no_pad.sum().float(), prog_bar=True)
+        self.log('{}/{}_ce_loss'.format(mode, name), ce_loss.detach(), prog_bar=True)
+        
+        back_logits = logits_out.clone()
+        back_logits = back_logits[..., :-2]   # [bs, max_len, 3, n_codes]
+        predicts = F.gumbel_softmax(back_logits, tau=0.2, hard=True) # [bs, max_len, 3, n_codes]
+        predicts = torch.matmul(predicts, self.vqvae.codebook.embeddings)  # [bs, max_len, 3, emb_dim]
+        rec_predicts = []
+        points = batch["skel_3d"] # [bs, max_len, 150]
+        ori_points = []       
+        for i in range(predicts.size(0)):
+            cur_points = points[i, :skel_len[i].item(), :] 
+            ori_points.append(cur_points)
+            cur_pred = predicts[i, :skel_len[i].item(), :, :]
+            rec_predicts.append(cur_pred)
+        ori_points = torch.cat(ori_points, dim=0) # [sum(skel_len), 150]
+        rec_predicts = torch.cat(rec_predicts, dim=0) # [sum(skel_len), 3, emb_dim]
+        
+        # reconstruction loss
+        pose = ori_points[:, :24]
+        rhand = ori_points[:, 24:24+63]
+        lhand = ori_points[:, 87:150]
+        rec_predicts = einops.rearrange(rec_predicts, "b n h -> b h n")
+        dec_pose, dec_rhand, dec_lhand = self.vqvae.decode(rec_predicts)  # [sum(skel_len), 24], [sum(skel_len), 63]
+
+        pose_rec_loss = torch.abs(pose - dec_pose).mean()
+        rhand_rec_loss = torch.abs(rhand - dec_rhand).mean()
+        lhand_rec_loss = torch.abs(lhand - dec_lhand).mean()
+
+        rec_loss = pose_rec_loss + rhand_rec_loss + lhand_rec_loss
+        self.log('{}/{}_pose_rec_loss'.format(mode, name), pose_rec_loss.detach(), prog_bar=True)
+        self.log('{}/{}_rhand_rec_loss'.format(mode, name), rhand_rec_loss.detach(), prog_bar=True)
+        self.log('{}/{}_lhand_rec_loss'.format(mode, name), lhand_rec_loss.detach(), prog_bar=True)
+        self.log('{}/{}_rec_loss'.format(mode, name), rec_loss.detach(), prog_bar=True)
+
+        # ctc loss
+        loss = ce_loss + rec_loss
+
+        self.log('{}/loss'.format(mode), loss.detach(), prog_bar=True)
+
+        if self.global_step % 200 == 0:
+            vis_func(pose, rhand, lhand, mode + name, "ori_vis")
+            vis_func(dec_pose, dec_rhand, dec_lhand, mode+ name, "dec_vis")
+            
+            rec_tokens = points_tokens[:skel_len[0], :].view(-1) # [1_len, 3]
+            pred_tokens = torch.argmax(logits_out[0, :skel_len[0], :], dim=-1).view(-1) # [1_len, 3]
+
+            vis_token_func(pred_tokens, mode + name,  "pred")
+            vis_token_func(rec_tokens, mode + name, "recon")
+        return loss, ce_loss, rec_loss, logits, tgt_no_pad
+
+
     def training_step(self, batch, batch_idx, mode="train"):
         self.vqvae.eval()
         points_tokens, points_embedding, skel_len = self._points2tokens(batch) # [sum(skel_len), 3]
@@ -112,7 +188,10 @@ class Text2PoseModel(pl.LightningModule):
             cur_point = points_tokens[start_len:end_len] # [cur_len, 3]
             cur_point = cur_point.view(-1)  # [cur_len * 3]
 
-            sample_size = self.random.randint(min_num_masks, cur_len*3)
+            if self.current_epoch <= 10:
+                sample_size = self.random.randint(min_num_masks, cur_len*3)
+            else:
+                sample_size = int(cur_len*3 * min(1.0, (self.current_epoch) / 50))
             ind = self.random.choice(cur_len*3, size=sample_size, replace=False)
 
             cur_inp = cur_point.clone()
@@ -131,89 +210,7 @@ class Text2PoseModel(pl.LightningModule):
         tgt_inp = torch.cat(tgt_inp, dim=0)  # [bs, max_len, 3]
         tgt_out = torch.cat(tgt_out, dim=0)  # [bs, max_len, 3]
 
-        # spatial position encoding
-        tgt_feat = self.tgt_embedding(tgt_inp) + self.spa_pos_emb # [bs, max_len, 3, emb_dim]
-        tgt_feat = tgt_feat.sum(-2)
-
-        # temporal position encoding
-        tgt_feat = tgt_feat + self.tem_pos_emb[:max_len, :] # [bs, max_len, emb_dim]
-        
-        tgt_mask = self._get_mask(skel_len, max_len, tgt_feat.device).unsqueeze_(1).unsqueeze_(2)
-        
-        pred_emb = self.transformer(src_feat, src_mask, tgt_feat, tgt_mask) # [bs, max_len, emd_dim]
-        pred_emb = self.out_linear(pred_emb) # [bs, max_len+1, 3*emd_dim]
-
-        pred_emb = einops.rearrange(pred_emb, "b t (n h) -> b t n h", n=3)
-        logits_out = torch.matmul(pred_emb, self.tgt_embedding.weight.t()) # [bs, max_len, 3, n_codes+2]
-
-        logits = logits_out.view(-1, logits_out.size(-1))
-        tgt_out = tgt_out.view(-1)
-        tgt_no_pad = tgt_out.ne(self.pad_idx)
-        ce_loss = F.cross_entropy(logits, tgt_out, ignore_index=self.pad_idx, reduction="sum")
-        ce_loss = ce_loss / tgt_no_pad.sum()
-        self.log("{}/no_pad".format(mode), tgt_no_pad.sum().float(), prog_bar=True)
-        self.log('{}/ce_loss'.format(mode), ce_loss.detach(), prog_bar=True)
-        
-        back_logits = logits_out.clone()
-        back_logits = back_logits[..., :-2]   # [bs, max_len, 3, n_codes]
-        predicts = F.gumbel_softmax(back_logits, tau=0.2, hard=True) # [bs, max_len, 3, n_codes]
-        predicts = torch.matmul(predicts, self.vqvae.codebook.embeddings)  # [bs, max_len, 3, emb_dim]
-        rec_predicts = []
-        points = batch["skel_3d"] # [bs, max_len, 150]
-        ori_points = []       
-        for i in range(bs):
-            cur_points = points[i, :skel_len[i].item(), :] 
-            ori_points.append(cur_points)
-            cur_pred = predicts[i, :skel_len[i].item(), :, :]
-            rec_predicts.append(cur_pred)
-        ori_points = torch.cat(ori_points, dim=0) # [sum(skel_len), 150]
-        rec_predicts = torch.cat(rec_predicts, dim=0) # [sum(skel_len), 3, emb_dim]
-        
-        # reconstruction loss
-        pose = ori_points[:, :24]
-        rhand = ori_points[:, 24:24+63]
-        lhand = ori_points[:, 87:150]
-        rec_predicts = einops.rearrange(rec_predicts, "b n h -> b h n")
-        dec_pose, dec_rhand, dec_lhand = self.vqvae.decode(rec_predicts)  # [sum(skel_len), 24], [sum(skel_len), 63]
-
-        pose_rec_loss = torch.abs(pose - dec_pose).mean()
-        rhand_rec_loss = torch.abs(rhand - dec_rhand).mean()
-        lhand_rec_loss = torch.abs(lhand - dec_lhand).mean()
-
-        rec_loss = pose_rec_loss + rhand_rec_loss + lhand_rec_loss
-        self.log('{}/pose_rec_loss'.format(mode), pose_rec_loss.detach(), prog_bar=True)
-        self.log('{}/rhand_rec_loss'.format(mode), rhand_rec_loss.detach(), prog_bar=True)
-        self.log('{}/lhand_rec_loss'.format(mode), lhand_rec_loss.detach(), prog_bar=True)
-        self.log('{}/rec_loss'.format(mode), rec_loss.detach(), prog_bar=True)
-
-        # ctc loss
-        if self.current_epoch >= 100:    
-            pred_points = torch.cat([dec_pose, dec_rhand, dec_lhand], dim=-1) # [sum(skel_len), 150]
-            pred_points_pad = torch.zeros(bs, max_len, 150).to(pred_points.device)
-            start, end = 0, 0
-            for i in range(bs):
-                end += skel_len[i].item()
-                pred_points_pad[i, :skel_len[i].item(), :] = pred_points[start:end, :]
-                start = end
-            
-            ctc_loss, _ = self.ctc_model(pred_points_pad, skel_len,  word_tokens, word_len, "train")
-            self.log('{}/ctc_loss'.format(mode), ctc_loss.detach(), prog_bar=True)
-
-            loss = ce_loss + rec_loss + ctc_loss
-        else:
-            loss = ce_loss + rec_loss
-
-        self.log('{}/loss'.format(mode), loss.detach(), prog_bar=True)
-
-        if mode == "train" and self.global_step % 200 == 0:
-            self.vis(pose, rhand, lhand, mode, "ori_vis")
-            self.vis(dec_pose, dec_rhand, dec_lhand, mode, "dec_vis")
-            
-            orig_tokens = points_tokens[:skel_len[0], :].view(-1) # [1_len, 3]
-            pred_tokens = torch.argmax(logits_out[0, :skel_len[0], :], dim=-1).view(-1) # [1_len, 3]
-
-            self.vis_token(pred_tokens, "recon")
-            self.vis_token(orig_tokens, "origin")
+        loss, _, _, _, _ = self.get_loss_and_logits(src_feat, src_mask, tgt_inp, tgt_out, skel_len, mode, "mask", points_tokens, batch, self.vis, self.vis_token)
         return loss
 
 
@@ -231,8 +228,8 @@ class Text2PoseModel(pl.LightningModule):
         src_feat = self.src_embedding(word_tokens) + self.tem_pos_emb[:src_len, :] # [bs, src_len, emb_dim]
         src_mask = word_tokens.ne(self.text_dict.pad()).unsqueeze_(1).unsqueeze_(2)  # [bs, src_len]
 
-        tgt_len = word_len * 4  # [bs]
-        max_len = src_len * 4
+        tgt_len = word_len * 8  # [bs]
+        max_len = src_len * 8
         
         tgt_inp = word_tokens.new(bs, max_len, 3).fill_(self.mask_idx)  # [bs, max_len]
         for b in range(bs): 
@@ -314,9 +311,9 @@ class Text2PoseModel(pl.LightningModule):
         masks = [torch.cat([mask, mask.new(seq_len - mask.size(0)).fill_(mask[0])], dim=0) for mask in masks]
         return torch.stack(masks, dim=0)
 
-    def vis_token(self, pred_tokens, name):
+    def vis_token(self, pred_tokens, mode, name):
         pred_tokens = " ".join([str(x) for x in pred_tokens.cpu().numpy().tolist()])
-        self.logger.experiment.add_text("{}/points".format(name), pred_tokens, self.current_epoch)
+        self.logger.experiment.add_text("{}/{}_points".format(mode, name), pred_tokens, self.current_epoch)
 
     def vis(self, pose, rhand, lhand, mode, name):
         points = torch.cat([pose, rhand, lhand], dim=-1).detach().cpu().numpy()
@@ -332,7 +329,7 @@ class Text2PoseModel(pl.LightningModule):
         show_img = np.concatenate(show_img, axis=1) # [h, w*16, c]
         show_img = torch.FloatTensor(show_img).permute(2, 0, 1).contiguous().unsqueeze(0) # [1, c, h ,w]
         show_img = torchvision.utils.make_grid(show_img, )
-        self.logger.experiment.add_image("{}/{}".format(mode, name), show_img, self.global_step)
+        self.logger.experiment.add_image("{}/{}".format(mode, name), show_img, self.current_epoch)
 
     
 

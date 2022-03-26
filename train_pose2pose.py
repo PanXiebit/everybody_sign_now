@@ -6,7 +6,7 @@ import argparse
 
 from models_phoneix.pose_vqvae_vit_model_spl_seperate import PoseVitVQVAE
 from pytorch_lightning.callbacks import ModelCheckpoint
-from data.phoneix_pose2pose_data_shift import PhoenixPoseData, PoseDataset
+from data_phoneix.phoneix_pose2pose_data_shift import PhoenixPoseData, PoseDataset
 from util.util import CheckpointEveryNSteps
 import os
 from pytorch_lightning.loggers import NeptuneLogger

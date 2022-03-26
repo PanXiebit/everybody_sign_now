@@ -51,15 +51,18 @@ parser = pl.Trainer.add_argparse_args(parser)
 opt = TrainOptions(parser).parse()
 print(opt)
 
-opt.data_path = "generate/"
+opt.data_path = "generate/nat/"
+# opt.data_path = "Data/ProgressiveTransformersSLP/"
+opt.vocab_file = "Data/ProgressiveTransformersSLP/src_vocab.txt"
+
 
 text_dict = Dictionary()
 text_dict = text_dict.load(opt.vocab_file)
 
 ctc_model = Point2textModel(opt, text_dict)
 
-saved_path = "pose2text_logs/lightning_logs/version_1/checkpoints/epoch=28-step=1623.ckpt"
-hparams_file = "pose2text_logs/lightning_logs/version_1/hparams.yaml"
+saved_path = "pose2text_logs/lightning_logs/val_wer_0.574/checkpoints/epoch=17-step=1007-val_wer=0.5748953819274902.ckpt"
+hparams_file = "pose2text_logs/lightning_logs/val_wer_0.574/hparams.yaml"
 ctc_model =  ctc_model.load_from_checkpoint(saved_path, hparams_file=hparams_file).cuda()
 
 

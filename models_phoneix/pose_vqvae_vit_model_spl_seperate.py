@@ -112,7 +112,7 @@ class PoseVitVQVAE(pl.LightningModule):
         show_img = []
         for j in range(4):
             frame_joints = points[j]
-            frame = np.ones((650, 650, 3), np.uint8) * 255
+            frame = np.ones((256, 256, 3), np.uint8) * 255
             frame_joints_2d = np.reshape(frame_joints, (50, 3))[:, :2]
             # Draw the frame given 2D joints
             im = draw_frame_2D(frame, frame_joints_2d)

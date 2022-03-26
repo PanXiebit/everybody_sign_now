@@ -61,8 +61,7 @@ class Text2PoseModel(pl.LightningModule):
         # backward
         from .point2text_model import Point2textModel
         if not os.path.exists(args.ctc_model):
-            print("{} is not existed!".format(args.ctc_model))
-            self.ctc_model = Point2textModel(args, text_dict)
+            raise ValueError("{} is not existed!".format(args.ctc_model))
         else:
             print("load ctc model from {}".format(args.ctc_model))
             self.ctc_model = Point2textModel.load_from_checkpoint(args.ctc_model, hparams_file=args.ctc_hparams_file)
@@ -96,48 +95,51 @@ class Text2PoseModel(pl.LightningModule):
         word_len = batch["gloss_len"]
         bs, src_len = word_tokens.size()
 
-        src_feat = self.src_embedding(word_tokens) + self.tem_pos_emb[:src_len, :]
+        src_feat = self.src_embedding(word_tokens) + self.tem_pos_emb[:src_len, :] # [bs, src_len, emb_dim]
         src_mask = word_tokens.ne(self.text_dict.pad()).unsqueeze_(1).unsqueeze_(2)
 
+        # print("skel_len: ", skel_len)
+        # print("word_len: ", word_len)
+
         max_len = max(skel_len)
-        pad_token = points_tokens.new(1, 3).fill_(self.pad_idx)
+        tgt_pad_token = points_tokens.new(1, 3).fill_(self.pad_idx)
+        src_pad_feat = self.src_embedding.weight[self.text_dict.pad()].unsqueeze(0)
         
-        min_num_masks = 1
         tgt_inp = []
         tgt_out = []
         end_len = start_len = 0
         for i in range(bs):
-            cur_len = skel_len[i].item()
-            end_len += cur_len
+            cur_tgt_len = skel_len[i].item()
+            end_len += cur_tgt_len
             cur_point = points_tokens[start_len:end_len] # [cur_len, 3]
-            cur_point = cur_point.view(-1)  # [cur_len * 3]
-
-            sample_size = self.random.randint(min_num_masks, cur_len*3)
-            ind = self.random.choice(cur_len*3, size=sample_size, replace=False)
-
-            cur_inp = cur_point.clone()
-            cur_inp[ind] = self.mask_idx
-            cur_inp = cur_inp.view(cur_len, 3)
-            cur_inp = torch.cat([cur_inp, pad_token.repeat(max_len - cur_len, 1)], dim=0) # [max_len, 3]
+            
+            cur_inp = torch.ones_like(cur_point).to(cur_point.device) * self.mask_idx
+            cur_inp = torch.cat([cur_inp, tgt_pad_token.repeat(max_len - cur_tgt_len, 1)], dim=0) # [max_len, 3]
+            cur_out = torch.cat([cur_point, tgt_pad_token.repeat(max_len - cur_tgt_len, 1)], dim=0) # [max_len, 3]
+            
             tgt_inp.append(cur_inp.unsqueeze_(0))
 
-            cur_out = torch.ones_like(cur_point).to(cur_point.device) * self.pad_idx
-            cur_out[ind] = cur_point[ind]
-            cur_out = cur_out.view(cur_len, 3)
-            cur_out = torch.cat([cur_out, pad_token.repeat(max_len - cur_len, 1)], dim=0) # [max_len, 3]
-            tgt_out.append(cur_out.unsqueeze_(0)) # [1, max_len, 3]
+            cur_out = torch.cat([cur_point, tgt_pad_token.repeat(max_len - cur_tgt_len, 1)], dim=0) # [max_len, 3]
+            tgt_out.append(cur_out.unsqueeze_(0))
+
+            
+            # cur_src_len = word_len[i].item()
+            # folds = math.ceil(cur_tgt_len / cur_src_len)
+            # cur_inp = src_feat[i, :cur_src_len].unsqueeze(1).repeat(1, folds, 1) # [cur_src_len, olds, emb_dim]
+            # cur_inp = einops.rearrange(cur_inp, "t f h -> (t f) h") # [cur_src_len * olds, emb_dim]
+            # if cur_tgt_len % cur_src_len is not 0:
+            #     ids = self.random.choice(cur_src_len*folds, cur_tgt_len)
+            #     ids.sort()
+            #     cur_inp = cur_inp[ids]
+            # cur_inp = torch.cat([cur_inp, src_pad_feat.repeat(max_len - cur_tgt_len, 1)], dim=0)
+            # tgt_inp.append(cur_inp.unsqueeze_(0))
             start_len = end_len
-
-        tgt_inp = torch.cat(tgt_inp, dim=0)  # [bs, max_len, 3]
-        tgt_out = torch.cat(tgt_out, dim=0)  # [bs, max_len, 3]
-
-        # spatial position encoding
-        tgt_feat = self.tgt_embedding(tgt_inp) + self.spa_pos_emb # [bs, max_len, 3, emb_dim]
-        tgt_feat = tgt_feat.sum(-2)
-
-        # temporal position encoding
-        tgt_feat = tgt_feat + self.tem_pos_emb[:max_len, :] # [bs, max_len, emb_dim]
         
+        tgt_out = torch.cat(tgt_out, dim=0)  # [bs, max_len, 3]
+        # tgt_feat = torch.cat(tgt_inp, dim=0)
+        tgt_feat = self.tem_pos_emb[:max_len, :].unsqueeze_(0).repeat(bs, 1, 1)
+
+
         tgt_mask = self._get_mask(skel_len, max_len, tgt_feat.device).unsqueeze_(1).unsqueeze_(2)
         
         pred_emb = self.transformer(src_feat, src_mask, tgt_feat, tgt_mask) # [bs, max_len, emd_dim]
@@ -151,6 +153,7 @@ class Text2PoseModel(pl.LightningModule):
         tgt_no_pad = tgt_out.ne(self.pad_idx)
         ce_loss = F.cross_entropy(logits, tgt_out, ignore_index=self.pad_idx, reduction="sum")
         ce_loss = ce_loss / tgt_no_pad.sum()
+
         self.log("{}/no_pad".format(mode), tgt_no_pad.sum().float(), prog_bar=True)
         self.log('{}/ce_loss'.format(mode), ce_loss.detach(), prog_bar=True)
         
@@ -187,7 +190,7 @@ class Text2PoseModel(pl.LightningModule):
         self.log('{}/rec_loss'.format(mode), rec_loss.detach(), prog_bar=True)
 
         # ctc loss
-        if self.current_epoch >= 100:    
+        if self.current_epoch >= 40:    
             pred_points = torch.cat([dec_pose, dec_rhand, dec_lhand], dim=-1) # [sum(skel_len), 150]
             pred_points_pad = torch.zeros(bs, max_len, 150).to(pred_points.device)
             start, end = 0, 0
@@ -222,7 +225,7 @@ class Text2PoseModel(pl.LightningModule):
 
 
     @torch.no_grad()
-    def generate(self, batch, batch_idx, iterations, total_seq_len=200, temperature = 1., default_batch_size = 1, ):
+    def generate(self, batch, batch_idx, total_seq_len=200, temperature = 1., default_batch_size = 1, ):
         self.vqvae.eval()
         word_tokens = batch["gloss_id"]
         word_len = batch["gloss_len"]
@@ -231,43 +234,25 @@ class Text2PoseModel(pl.LightningModule):
         src_feat = self.src_embedding(word_tokens) + self.tem_pos_emb[:src_len, :] # [bs, src_len, emb_dim]
         src_mask = word_tokens.ne(self.text_dict.pad()).unsqueeze_(1).unsqueeze_(2)  # [bs, src_len]
 
-        tgt_len = word_len * 4  # [bs]
-        max_len = src_len * 4
+        tgt_len = word_len * 8  # [bs]
+        max_len = src_len * 8
+
+        tgt_feat = self.tem_pos_emb[:max_len, :].unsqueeze_(0).repeat(bs, 1, 1)
+        tgt_mask = self._get_mask(tgt_len, max_len, tgt_feat.device).unsqueeze_(1).unsqueeze_(2)
+
+        pred_emb = self.transformer(src_feat, src_mask, tgt_feat, tgt_mask) # [bs, max_len, emd_dim]
+        pred_emb = self.out_linear(pred_emb) # [bs, max_len+1, 3*emd_dim]
+
+        pred_emb = einops.rearrange(pred_emb, "b t (n h) -> b t n h", n=3)
+        logits_out = torch.matmul(pred_emb, self.tgt_embedding.weight.t()) # [bs, max_len, 3, n_codes+2]
+        logits_out = logits_out[..., :-2] # [bs, max_len, 3, n_codes]
+
+        probs = F.softmax(logits_out, dim=-1)
+        max_probs, tgt_preds = probs.max(dim=-1)
         
-        tgt_inp = word_tokens.new(bs, max_len, 3).fill_(self.mask_idx)  # [bs, max_len]
-        for b in range(bs): 
-            tgt_inp[b, tgt_len[b].item():, :] = self.pad_idx
-
-        pad_mask = tgt_inp.eq(self.pad_idx)
-        tgt_inp, tgt_probs = self.generate_step_with_probs(tgt_inp, tgt_len, src_feat, src_mask) # [bs, tgt_len, 3]
-        assign_single_value_byte(tgt_inp, pad_mask, self.pad_idx)
-        assign_single_value_byte(tgt_probs, pad_mask, 1.0)
-
-        seq_lens = tgt_len * 3 # [bs]
-
-        for counter in range(1, iterations):
-            num_mask = (seq_lens.float() * (1.0 - (counter / iterations))).long()
-
-            assign_single_value_byte(tgt_probs, pad_mask, 1.0)
-            mask_ind = self.select_worst(tgt_probs.view(bs, -1), num_mask)
-            mask_ind = mask_ind.view(bs, max_len, 3)
-            
-            assign_single_value_long(tgt_inp.view(bs, -1), mask_ind.view(bs, -1), self.mask_idx)
-            assign_single_value_byte(tgt_inp, pad_mask, self.pad_idx)
-
-            new_tgt_inp, new_tgt_probs = self.generate_step_with_probs(tgt_inp, tgt_len, src_feat, src_mask) 
-
-            assign_multi_value_long(tgt_probs.view(bs, -1), mask_ind.view(bs, -1), new_tgt_probs)
-            assign_single_value_byte(tgt_probs, pad_mask, 1.0)
-
-            assign_multi_value_long(tgt_inp.view(bs, -1), mask_ind.view(bs, -1), new_tgt_inp)
-            assign_single_value_byte(tgt_inp, pad_mask, self.pad_idx)
-
-        # predicts = tgt_inp # [bs, max_len, 3]
-
         batch_preds = []
         for k in range(bs):
-            predicts = tgt_inp[k, :tgt_len[k], :]
+            predicts = tgt_preds[k, :tgt_len[k], :]
             predicts = F.embedding(predicts, self.vqvae.codebook.embeddings)  # [t, n, h]
 
             predicts = einops.rearrange(predicts, " t n h -> t h n")
@@ -286,33 +271,8 @@ class Text2PoseModel(pl.LightningModule):
                 show_img.append(im)
             show_img = np.concatenate(show_img, axis=1) # [h, w*16, c]
             cv2.imwrite("Data/predictions/nat/{}_{}.png".format(batch_idx, k), show_img)
-        return tgt_inp, batch_preds 
+        return tgt_preds, batch_preds 
 
-    @torch.no_grad()
-    def generate_step_with_probs(self, tgt_inp, tgt_len, src_feat, src_mask):
-        max_len = max(tgt_len)
-        tgt_feat = self.tgt_embedding(tgt_inp) + self.spa_pos_emb # [bs, max_len, 3, emb_dim]
-        tgt_feat = tgt_feat.sum(-2)
-
-        # temporal position encoding
-        tgt_feat = tgt_feat + self.tem_pos_emb[:max_len, :] # [bs, max_len, emb_dim]
-        tgt_mask = self._get_mask(tgt_len, max_len, tgt_feat.device).unsqueeze_(1).unsqueeze_(2)
-        pred_emb = self.transformer(src_feat, src_mask, tgt_feat, tgt_mask) # [bs, max_len, emd_dim]
-        pred_emb = self.out_linear(pred_emb) # [bs, max_len+1, 3*emd_dim]
-
-        pred_emb = einops.rearrange(pred_emb, "b t (n h) -> b t n h", n=3)
-        logits_out = torch.matmul(pred_emb, self.tgt_embedding.weight.t()) # [bs, max_len, 3, n_codes+2]
-        logits_out = logits_out[..., :-2] # [bs, max_len, 3, n_codes]
-
-        probs = F.softmax(logits_out, dim=-1)
-        max_probs, idx = probs.max(dim=-1)
-        return idx, max_probs
-
-    def select_worst(self, token_probs, num_mask):
-        bsz, seq_len = token_probs.size()
-        masks = [token_probs[batch, :].topk(max(1, num_mask[batch]), largest=False, sorted=False)[1] for batch in range(bsz)]
-        masks = [torch.cat([mask, mask.new(seq_len - mask.size(0)).fill_(mask[0])], dim=0) for mask in masks]
-        return torch.stack(masks, dim=0)
 
     def vis_token(self, pred_tokens, name):
         pred_tokens = " ".join([str(x) for x in pred_tokens.cpu().numpy().tolist()])

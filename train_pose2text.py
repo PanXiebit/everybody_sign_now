@@ -4,7 +4,7 @@ from configs.train_options import TrainOptions
 import pytorch_lightning as pl
 import argparse
 
-from models_phoneix.point2text_model import Point2textModel
+from models_phoneix.point2text_model_vqvae_tr import Point2textModel
 from pytorch_lightning.callbacks import ModelCheckpoint
 from data_phoneix.phoneix_text2pose_data_shift import PhoenixPoseData, PoseDataset
 from util.util import CheckpointEveryNSteps
@@ -35,7 +35,7 @@ def main():
     #     hparams_file="lightning_logs/seqlen_16_with_anchor//hparams.yaml")
     
     callbacks = []
-    callbacks.append(ModelCheckpoint(monitor="val/wer", filename='{epoch}-{step}', save_top_k=1, mode="min"))
+    callbacks.append(ModelCheckpoint(monitor="val_wer", filename='{epoch}-{step}-{val_wer}', save_top_k=-1, mode="min"))
 
     kwargs = dict()
     if opt.gpus > 1:

@@ -166,9 +166,7 @@ class Dictionary(object):
 
 
     def deocde_list(self, tensor_list):
-        print("tensor_list: ", tensor_list)
         word_line = " ".join([self.__getitem__(w) for w in tensor_list])
-        print("word_line: ", word_line)
         return word_line
 
     
