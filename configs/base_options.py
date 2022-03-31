@@ -17,7 +17,7 @@ class BaseOptions():
         self.parser.add_argument('--checkpoints_dir', type=str, default='./checkpoints', help='models are saved here')
         self.parser.add_argument('--norm', type=str, default='instance', help='instance normalization or batch normalization')        
         self.parser.add_argument('--use_dropout', action='store_true', help='use dropout for the generator')
-        self.parser.add_argument('--num_workers', type=int, default=24, help='')
+        self.parser.add_argument('--num_workers', type=int, default=4, help='')
 
         # input/output sizes
                

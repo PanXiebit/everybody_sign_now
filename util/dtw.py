@@ -1,12 +1,60 @@
 from numpy import array, zeros, full, argmin, inf, ndim
 from scipy.spatial.distance import cdist
 from math import isinf
+import torch
+import numpy as np
+
 
 """
 Dynamic time warping (DTW) is used as a similarity measured between temporal sequences. 
 Original DTW code found at https://github.com/pierre-rouanet/dtw
 
 """
+
+# Find the best timing match between a reference and a hypothesis, using DTW
+def calculate_dtw(references, hypotheses):
+    """
+    Calculate the DTW costs between a list of references and hypotheses
+
+    :param references: list of reference sequences to compare against
+    :param hypotheses: list of hypothesis sequences to fit onto the reference
+
+    :return: dtw_scores: list of DTW costs
+    """
+    # Euclidean norm is the cost function, difference of coordinates
+    euclidean_norm = lambda x, y: np.sum(np.abs(x - y))
+
+    dtw_scores = []
+
+    # Remove the BOS frame from the hypothesis
+    # hypotheses = hypotheses[:, 1:]
+
+    # For each reference in the references list
+    for i, ref in enumerate(references):
+        # Cut the reference down to the max count value
+        _ , ref_max_idx = torch.max(ref[:, -1], 0)
+        if ref_max_idx == 0: ref_max_idx += 1
+        # Cut down frames by to the max counter value, and chop off counter from joints
+        ref_count = ref[:ref_max_idx,:-1].cpu().numpy()
+
+        # Cut the hypothesis down to the max count value
+        hyp = hypotheses[i]
+        _, hyp_max_idx = torch.max(hyp[:, -1], 0)
+        if hyp_max_idx == 0: hyp_max_idx += 1
+        # Cut down frames by to the max counter value, and chop off counter from joints
+        hyp_count = hyp[:hyp_max_idx,:-1].cpu().numpy()
+
+        # Calculate DTW of the reference and hypothesis, using euclidean norm
+        d, cost_matrix, acc_cost_matrix, path = dtw(ref_count, hyp_count, dist=euclidean_norm)
+
+        # Normalise the dtw cost by sequence length
+        d = d/acc_cost_matrix.shape[0]
+
+        dtw_scores.append(d)
+
+    # Return dtw scores and the hypothesis with altered timing
+    return dtw_scores
+
 
 # Apply DTW
 def dtw(x, y, dist, warp=1, w=inf, s=1.0):
@@ -78,42 +126,54 @@ def _traceback(D):
 
 
 if __name__ == '__main__':
-    w = inf
-    s = 1.0
-    if 1:  # 1-D numeric
-        from sklearn.metrics.pairwise import manhattan_distances
-        x = [0, 0, 1, 1, 2, 4, 2, 1, 2, 0]
-        y = [1, 1, 1, 2, 2, 2, 2, 3, 2, 0]
-        dist_fun = manhattan_distances
-        w = 1
-        # s = 1.2
-    elif 0:  # 2-D numeric
-        from sklearn.metrics.pairwise import euclidean_distances
-        x = [[0, 0], [0, 1], [1, 1], [1, 2], [2, 2], [4, 3], [2, 3], [1, 1], [2, 2], [0, 1]]
-        y = [[1, 0], [1, 1], [1, 1], [2, 1], [4, 3], [4, 3], [2, 3], [3, 1], [1, 2], [1, 0]]
-        dist_fun = euclidean_distances
-    else:  # 1-D list of strings
-        from nltk.metrics.distance import edit_distance
-        # x = ['we', 'shelled', 'clams', 'for', 'the', 'chowder']
-        # y = ['class', 'too']
-        x = ['i', 'soon', 'found', 'myself', 'muttering', 'to', 'the', 'walls']
-        y = ['see', 'drown', 'himself']
-        # x = 'we talked about the situation'.split()
-        # y = 'we talked about the situation'.split()
-        dist_fun = edit_distance
-    dist, cost, acc, path = dtw(x, y, dist_fun, w=w, s=s)
+    x = np.random.rand(10, 150)
+    # y = np.random.rand(10, 150)
+    y = x
+    euclidean_norm = lambda x, y: np.sum(np.abs(x - y))
+    d, cost_matrix, acc_cost_matrix, path = dtw(x, y, dist=euclidean_norm)
 
-    # Vizualize
-    from matplotlib import pyplot as plt
-    plt.imshow(cost.T, origin='lower', cmap=plt.cm.Reds, interpolation='nearest')
-    plt.plot(path[0], path[1], '-o')  # relation
-    plt.xticks(range(len(x)), x)
-    plt.yticks(range(len(y)), y)
-    plt.xlabel('x')
-    plt.ylabel('y')
-    plt.axis('tight')
-    if isinf(w):
-        plt.title('Minimum distance: {}, slope weight: {}'.format(dist, s))
-    else:
-        plt.title('Minimum distance: {}, window widht: {}, slope weight: {}'.format(dist, w, s))
-    plt.show()
+    # Normalise the dtw cost by sequence length
+    # d = d/acc_cost_matrix.shape[0]
+
+    print(d, acc_cost_matrix.shape[0])
+
+    # x2 = np.random.randn(5, 10, )
+    # w = inf
+    # s = 1.0
+    # if 1:  # 1-D numeric
+    #     from sklearn.metrics.pairwise import manhattan_distances
+    #     x = [0, 0, 1, 1, 2, 4, 2, 1, 2, 0]
+    #     y = [1, 1, 1, 2, 2, 2, 2, 3, 2, 0]
+    #     dist_fun = manhattan_distances
+    #     w = 1
+    #     # s = 1.2
+    # elif 0:  # 2-D numeric
+    #     from sklearn.metrics.pairwise import euclidean_distances
+    #     x = [[0, 0], [0, 1], [1, 1], [1, 2], [2, 2], [4, 3], [2, 3], [1, 1], [2, 2], [0, 1]]
+    #     y = [[1, 0], [1, 1], [1, 1], [2, 1], [4, 3], [4, 3], [2, 3], [3, 1], [1, 2], [1, 0]]
+    #     dist_fun = euclidean_distances
+    # else:  # 1-D list of strings
+    #     from nltk.metrics.distance import edit_distance
+    #     # x = ['we', 'shelled', 'clams', 'for', 'the', 'chowder']
+    #     # y = ['class', 'too']
+    #     x = ['i', 'soon', 'found', 'myself', 'muttering', 'to', 'the', 'walls']
+    #     y = ['see', 'drown', 'himself']
+    #     # x = 'we talked about the situation'.split()
+    #     # y = 'we talked about the situation'.split()
+    #     dist_fun = edit_distance
+    # dist, cost, acc, path = dtw(x, y, dist_fun, w=w, s=s)
+
+    # # Vizualize
+    # from matplotlib import pyplot as plt
+    # plt.imshow(cost.T, origin='lower', cmap=plt.cm.Reds, interpolation='nearest')
+    # plt.plot(path[0], path[1], '-o')  # relation
+    # plt.xticks(range(len(x)), x)
+    # plt.yticks(range(len(y)), y)
+    # plt.xlabel('x')
+    # plt.ylabel('y')
+    # plt.axis('tight')
+    # if isinf(w):
+    #     plt.title('Minimum distance: {}, slope weight: {}'.format(dist, s))
+    # else:
+    #     plt.title('Minimum distance: {}, window widht: {}, slope weight: {}'.format(dist, w, s))
+    # plt.show()

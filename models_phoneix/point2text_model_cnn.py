@@ -30,6 +30,126 @@ from util.phoneix_cleanup import clean_phoenix_2014
 from util.metrics import wer_single
 
 
+def conv3x3(in_planes, out_planes, stride=1, groups=1, dilation=1):
+    """3x3 convolution with padding"""
+    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
+                     padding=dilation, groups=groups, bias=False, dilation=dilation)
+
+
+class BasicBlock(nn.Module):
+    def __init__(self, inplanes, planes, stride=1):
+        super(BasicBlock, self).__init__()
+        self.norm_layer = nn.BatchNorm2d
+        self.conv1 = conv3x3(inplanes, planes, stride=1)
+        self.bn1 = self.norm_layer(planes, affine=True)
+        self.relu = nn.ReLU(inplace=True)
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)  # downsample
+        self.conv2 = conv3x3(planes, planes, stride=1)
+        self.bn2 = self.norm_layer(planes, affine=True)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.pool(x)
+        x = self.conv2(x)
+        x = self.bn2(x)
+        x = self.relu(x)
+        return x
+
+
+class MainStream(nn.Module):
+    def __init__(self, vocab_size, momentum=0.1):
+        super(MainStream, self).__init__()
+
+        # cnn
+        # first layer: channel 3 -> 32
+        self.conv = conv3x3(3, 32)
+        self.bn = nn.BatchNorm2d(32, momentum=momentum,  affine=True)
+        self.relu = nn.ReLU(inplace=True)
+        self.pool = nn.MaxPool2d(2, 2)
+
+        channels = [32, 64, 128, 256, 512]
+        layers = []
+        for num_layer in range(len(channels) - 1):
+            layers.append(BasicBlock(channels[num_layer], channels[num_layer + 1]))
+        self.layers = nn.Sequential(*layers)
+
+        self.avgpool = nn.AdaptiveAvgPool2d(output_size=1)
+
+        # encoder G1, two F5-S1-P2-M2
+        self.enc1_conv1 = nn.Conv1d(in_channels=512, out_channels=512, kernel_size=5, stride=1, padding=2)
+        self.enc1_bn1 = nn.BatchNorm1d(512, momentum=momentum, affine=True)
+        self.enc1_pool1 = nn.MaxPool1d(kernel_size=2, stride=2)
+
+        self.enc1_conv2 = nn.Conv1d(in_channels=512, out_channels=512, kernel_size=5, stride=1, padding=2)
+        self.enc1_bn2 = nn.BatchNorm1d(512, momentum=momentum, affine=True)
+        self.enc1_pool2 = nn.MaxPool1d(kernel_size=2, stride=2)
+        self.enc1 = nn.Sequential(self.enc1_conv1, self.enc1_bn1, self.relu, self.enc1_pool1, self.enc1_conv2, self.enc1_bn2, self.relu, self.enc1_pool2)
+
+        self.enc2_conv = nn.Conv1d(in_channels=512, out_channels=1024, kernel_size=3, stride=1, padding=1)
+        self.enc2_bn = nn.BatchNorm1d(1024, momentum=momentum, affine=True)
+        self.enc2 = nn.Sequential(self.enc2_conv, self.enc2_bn, self.relu)
+
+        self.fc = nn.Linear(1024, vocab_size)
+
+        self.init()
+
+    def init(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, (nn.Linear)):
+                m.weight.data.normal_(mean=0.0, std=0.02)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                m.bias.data.zero_()
+
+
+    def forward(self, video, len_video=None):
+        """
+        x: [batch, num_f, 3, h, w]
+        """
+        # print("input: ", video.size())
+        bs, num_f, c, h, w = video.size()
+
+        x = video.reshape(-1, c, h, w)
+
+        x = self.conv(x)
+        x = self.bn(x)
+        x = self.relu(x)
+        x = self.pool(x)
+        x = self.layers(x)
+        x = self.avgpool(x).squeeze_()  # [bs*t, 512]
+
+        x = x.reshape(bs, -1, 512)     # [bs, t ,512]
+        x = x.permute(0, 2, 1)  # [bs, 512, t]
+
+        # enc1
+        x = self.enc1_conv1(x)  # [bs, 512, t/2]
+        x = self.enc1_bn1(x)
+        x = self.relu(x)
+        x = self.enc1_pool1(x)  # [bs, 512, t/2]
+
+        x = self.enc1_conv2(x)  # [bs, 512, t/2]
+        x = self.enc1_bn2(x)
+        x = self.relu(x)
+        x = self.enc1_pool2(x)  # [bs, 512, t/4]
+
+        # enc2
+        x = self.enc2_conv(x)
+        x = self.enc2_bn(x)
+        out = self.relu(x)
+
+        out = F.dropout(out, p=0.4, training=self.training)
+
+        out = out.permute(0, 2, 1).contiguous()
+        
+        logits = self.fc(out)  # [batch, t/4, vocab_size]
+        return logits
+
 
 class BackTranslateModel(pl.LightningModule):
     def __init__(self, args, text_dict):
@@ -37,41 +157,22 @@ class BackTranslateModel(pl.LightningModule):
 
         self.text_dict = text_dict
 
-        self.points_emb = nn.Linear(150, 512)
-
-        self.conv = nn.Sequential(nn.Conv1d(512, 512, kernel_size=5, stride=1, padding=2), 
-                                   nn.BatchNorm1d(512), 
-                                   nn.LeakyReLU(),
-                                   nn.MaxPool1d(2, 2),
-                                   nn.Conv1d(512, 512, kernel_size=5, stride=1, padding=2),
-                                   nn.BatchNorm1d(512),
-                                   nn.MaxPool1d(2, 2))
-
-        self.ctc_out = nn.Linear(512, len(text_dict))
+        self.cnn_model = MainStream(len(text_dict))
 
         self.ctcLoss = nn.CTCLoss(text_dict.blank(), reduction="mean", zero_infinity=True)
 
         self.decoder_vocab = [chr(x) for x in range(20000, 20000 + len(text_dict))]
         self.decoder = ctcdecode.CTCBeamDecoder(self.decoder_vocab, beam_width=5,
                                                 blank_id=text_dict.blank(),
-                                                num_processes=10)
+                                                num_processes=4)
 
         self.save_hyperparameters()
 
-    def forward(self, points, skel_len, word_tokens, word_len, mode):
-        """[bs, t, 150]
+    def forward(self, video, skel_len, word_tokens, word_len, mode):
+        """[bs, num_frame, 2, 112, 112]
         """
-        
-        max_len = max(skel_len)
-        points = self.points_emb(points)
-        points = einops.rearrange(points, "b t h -> b h t")
-        points = self.conv(points) # b h t/4
-        points = einops.rearrange(points, "b h t -> b t h")
-
+        logits = self.cnn_model(video)
         skel_len = skel_len // 4 
-        max_len = max_len // 4
-
-        logits = self.ctc_out(points)  # [bs, t, vocab_size]
 
         lprobs = logits.log_softmax(-1) # [b t v] 
         lprobs = einops.rearrange(lprobs, "b t v -> t b v")
@@ -79,15 +180,15 @@ class BackTranslateModel(pl.LightningModule):
         loss = self.ctcLoss(lprobs.cpu(), word_tokens.cpu(), skel_len.cpu(), word_len.cpu()).to(lprobs.device)
         self.log('{}/loss'.format(mode), loss.detach(), prog_bar=True)
         return loss, logits
-        
 
     def training_step(self, batch):
         word_tokens = batch["gloss_id"]
         word_len = batch["gloss_len"]
         points = batch["skel_3d"]
         skel_len = batch["skel_len"]
+        video = batch["vid"]
 
-        loss, _ = self.forward(points, skel_len,  word_tokens, word_len, "train")
+        loss, _ = self.forward(video, skel_len,  word_tokens, word_len, "train")
         return loss
     
     def validation_step(self, batch, batch_idx):
@@ -95,8 +196,9 @@ class BackTranslateModel(pl.LightningModule):
         gloss_len = batch["gloss_len"]
         points = batch["skel_3d"]
         skel_len = batch["skel_len"]
-        
-        _, logits = self.forward(points, skel_len,  gloss_id, gloss_len, "val") # [bs, t, vocab_size]
+        video = batch["vid"]
+
+        _, logits = self.forward(video, skel_len,  gloss_id, gloss_len, "val") # [bs, t, vocab_size]
         bs = skel_len.size(0)
         
         # TODO! recognition prediction and compute wer
@@ -124,15 +226,15 @@ class BackTranslateModel(pl.LightningModule):
             err_delsubins += np.array(err)
             count += 1
 
-            res = wer_single(ref_sent, hyp_sent)
-            total_error += res["num_err"]
-            total_del += res["num_del"]
-            total_ins += res["num_ins"]
-            total_sub += res["num_sub"]
-            total_ref_len += res["num_ref"]
+            # res = wer_single(ref_sent, hyp_sent)
+            # total_error += res["num_err"]
+            # total_del += res["num_del"]
+            # total_ins += res["num_ins"]
+            # total_sub += res["num_sub"]
+            # total_ref_len += res["num_ref"]
 
-        return dict(wer=err_delsubins, correct=correct, count=count, 
-                    total_error=total_error, total_del=total_del, total_ins=total_ins, total_sub=total_sub, total_ref_len=total_ref_len)
+        return dict(wer=err_delsubins, correct=correct, count=count)
+                    # total_error=total_error, total_del=total_del, total_ins=total_ins, total_sub=total_sub, total_ref_len=total_ref_len)
 
     def validation_epoch_end(self, outputs) -> None:
         val_err, val_correct, val_count = np.zeros([4]), 0, 0
@@ -141,28 +243,29 @@ class BackTranslateModel(pl.LightningModule):
             val_err += out["wer"]
             val_correct += out["correct"]
             val_count += out["count"]
-            total_error += out["total_error"]
-            total_del += out["total_del"]
-            total_ins += out["total_ins"]
-            total_sub += out["total_sub"]
-            total_ref_len += out["total_ref_len"]
+            # total_error += out["total_error"]
+            # total_del += out["total_del"]
+            # total_ins += out["total_ins"]
+            # total_sub += out["total_sub"]
+            # total_ref_len += out["total_ref_len"]
 
-        self.log('{}_wer2'.format("val"), total_error / total_ref_len, prog_bar=True)
-        self.log('{}/sub2'.format("val"), total_sub / total_ref_len, prog_bar=True)
-        self.log('{}/ins2'.format("val"), total_ins / total_ref_len, prog_bar=True)
-        self.log('{}/del2'.format("val"), total_del / total_ref_len, prog_bar=True)
+        # self.log('{}_wer2'.format("val"), total_error / total_ref_len, prog_bar=True)
+        # self.log('{}/sub2'.format("val"), total_sub / total_ref_len, prog_bar=True)
+        # self.log('{}/ins2'.format("val"), total_ins / total_ref_len, prog_bar=True)
+        # self.log('{}/del2'.format("val"), total_del / total_ref_len, prog_bar=True)
 
         self.log('{}/acc'.format("val"), val_correct / val_count, prog_bar=True)
         self.log('{}_wer'.format("val"), val_err[0] / val_count, prog_bar=True)
-        self.log('{}/sub'.format("val"), val_err[1] / val_count, prog_bar=True)
-        self.log('{}/ins'.format("val"), val_err[2] / val_count, prog_bar=True)
-        self.log('{}/del'.format("val"), val_err[3] / val_count, prog_bar=True)
-  
+        # self.log('{}/sub'.format("val"), val_err[1] / val_count, prog_bar=True)
+        # self.log('{}/ins'.format("val"), val_err[2] / val_count, prog_bar=True)
+        # self.log('{}/del'.format("val"), val_err[3] / val_count, prog_bar=True)
+
+        print("wer and acc: ", val_correct / val_count, val_err[0] / val_count)
         # for g in self.optimizer.param_groups: 
         #     if self.current_epoch >= 40:           
         #         g['lr'] = g["lr"] * 0.5
         
-                # print("Epoch {}, lr {}".format(self.current_epoch, g['lr']))
+        #         print("Epoch {}, lr {}".format(self.current_epoch, g['lr']))
     
     def _get_mask(self, x_len, size, device):
         pos = torch.arange(0, size).unsqueeze(0).repeat(x_len.size(0), 1).to(device)
@@ -172,8 +275,8 @@ class BackTranslateModel(pl.LightningModule):
 
     def configure_optimizers(self):
         self.optimizer = torch.optim.Adam(self.parameters(), lr=1e-4, betas=(0.9, 0.999))
-        scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, 3, gamma=0.96, last_epoch=-1)
-        return [self.optimizer], [scheduler]
+        # scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, 3, gamma=0.96, last_epoch=-1)
+        return [self.optimizer]
 
 
     @staticmethod
