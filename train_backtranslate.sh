@@ -20,7 +20,7 @@ python -m train_backtranslate \
     --data_path "Data/ProgressiveTransformersSLP" \
     --vocab_file "Data/ProgressiveTransformersSLP/src_vocab.txt" \
     --resume_ckpt "" \
-    --default_root_dir "/Dataset/everybody_sign_now_experiments/pose2text_logs/backmodel" \
+    --default_root_dir "/Dataset/everybody_sign_now_experiments/pose2text_logs/test" \
     --max_steps 300000 \
     --max_frames_num 200 \
     --gpu_ids "0" \

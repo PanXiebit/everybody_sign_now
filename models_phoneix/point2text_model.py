@@ -56,6 +56,10 @@ class BackTranslateModel(pl.LightningModule):
                                                 blank_id=text_dict.blank(),
                                                 num_processes=10)
 
+        from .point2text_model_vqvae_tr_nat_stage1_seperate2 import Point2textModel
+        self.stage1_model = Point2textModel.load_from_checkpoint(
+            checkpoint_path="/Dataset/everybody_sign_now_experiments/pose2text_logs/stage1/lightning_logs/seperate_vit/checkpoints/epoch=56-step=33743-val_wer=0.0000-val_rec_loss=0.0138-val_ce_loss=0.0000.ckpt", 
+            hparams_file="/Dataset/everybody_sign_now_experiments/pose2text_logs/stage1/lightning_logs/seperate_vit/hparams.yaml")
         self.save_hyperparameters()
 
     def forward(self, points, skel_len, word_tokens, word_len, mode):
@@ -87,8 +91,17 @@ class BackTranslateModel(pl.LightningModule):
         points = batch["skel_3d"]
         skel_len = batch["skel_len"]
 
-        loss, _ = self.forward(points, skel_len,  word_tokens, word_len, "train")
-        return loss
+        bs, max_len, v = points.size()
+        points_mask = self._get_mask(skel_len, max_len, points.device)
+        _, points_feat, _ = self.stage1_model.vqvae_encode(points, points_mask) # [bs, t], [bs, h, t]
+        dec_pose, dec_rhand, dec_lhand = self.stage1_model.vqvae_decode(points_feat, points_mask)
+        dec_points = torch.cat([dec_pose, dec_rhand, dec_lhand], dim=-1) # [bs*max_len, 150]
+
+        loss1, _ = self.forward(points, skel_len,  word_tokens, word_len, "train")
+        loss2, _ = self.forward(dec_points, skel_len,  word_tokens, word_len, "train_dec")
+        print("points: ", points.shape, dec_points.shape)
+        exit()
+        return loss1 + loss2
     
     def validation_step(self, batch, batch_idx):
         gloss_id = batch["gloss_id"]

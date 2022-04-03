@@ -4,7 +4,7 @@ from configs.train_options import TrainOptions
 import pytorch_lightning as pl
 import argparse
 
-from models_phoneix.point2text_model_cnn import BackTranslateModel
+from models_phoneix.point2text_model import BackTranslateModel
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from data_phoneix.phoneix_text2pose_img_data_shift import PhoenixPoseData, PoseDataset

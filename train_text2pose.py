@@ -3,7 +3,7 @@ from configs.train_options import TrainOptions
 import pytorch_lightning as pl
 import argparse
 
-from models_phoneix.point2text_model_vqvae_tr_nat_stage2_emb_seperate import Point2textModelStage2
+from models_phoneix.point2text_model_vqvae_tr_nat_stage2_emb_seperate2 import Point2textModelStage2
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from data_phoneix.phoneix_text2pose_data_shift import PhoenixPoseData
@@ -37,7 +37,7 @@ def main():
     
     callbacks = []
     model_save_ccallback = ModelCheckpoint(monitor="test_wer", filename='{epoch}-{step}-{val_ce_loss:.4f}-{val_wer:4f}', save_top_k=-1)
-    early_stop_callback = EarlyStopping(monitor="test_wer", min_delta=0.00, patience=10, verbose=False, mode="min")
+    early_stop_callback = EarlyStopping(monitor="test_wer", min_delta=0.00, patience=100, verbose=False, mode="min")
     callbacks.append(model_save_ccallback)
     callbacks.append(early_stop_callback)
 
@@ -47,7 +47,8 @@ def main():
     trainer = pl.Trainer.from_argparse_args(opt, callbacks=callbacks, 
                                             max_steps=200000000, **kwargs)
 
-    trainer.fit(model, data)
+    trainer.validate(model, dataloaders=data.val_dataloader())
+    # trainer.fit(model, data)
 
 
 if __name__ == "__main__":

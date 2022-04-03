@@ -19,9 +19,9 @@ python -m train_text2pose \
     --batchSize 8 \
     --data_path "Data/ProgressiveTransformersSLP" \
     --vocab_file "Data/ProgressiveTransformersSLP/src_vocab.txt" \
-    --pose_vqvae "/Dataset/everybody_sign_now_experiments/pose2text_logs/stage1/lightning_logs/joint_heatmap_seperate/checkpoints/epoch=29-step=35489-val_wer=0.0000-val_rec_loss=0.0221-val_ce_loss=0.0000.ckpt" \
-    --vqvae_hparams_file "/Dataset/everybody_sign_now_experiments/pose2text_logs/stage1/lightning_logs/joint_heatmap_seperate/hparams.yaml" \
-    --resume_ckpt "" \
+    --pose_vqvae "/Dataset/everybody_sign_now_experiments/pose2text_logs/stage1/lightning_logs/seperate_vit/checkpoints/epoch=56-step=33743-val_wer=0.0000-val_rec_loss=0.0138-val_ce_loss=0.0000.ckpt" \
+    --vqvae_hparams_file "/Dataset/everybody_sign_now_experiments/pose2text_logs/stage1/lightning_logs/seperate_vit/hparams.yaml" \
+    --resume_ckpt "/Dataset/everybody_sign_now_experiments/text2pose_logs/stage2/lightning_logs/version_1/checkpoints/epoch=174-step=155224-val_ce_loss=0.0000-val_wer=0.000000.ckpt" \
     --default_root_dir "/Dataset/everybody_sign_now_experiments/text2pose_logs/stage2" \
     --max_steps 300000 \
     --max_frames_num 200 \

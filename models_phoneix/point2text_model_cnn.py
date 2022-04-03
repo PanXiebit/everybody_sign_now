@@ -168,6 +168,7 @@ class BackTranslateModel(pl.LightningModule):
 
         self.save_hyperparameters()
 
+
     def forward(self, video, skel_len, word_tokens, word_len, mode):
         """[bs, num_frame, 2, 112, 112]
         """
@@ -180,6 +181,7 @@ class BackTranslateModel(pl.LightningModule):
         loss = self.ctcLoss(lprobs.cpu(), word_tokens.cpu(), skel_len.cpu(), word_len.cpu()).to(lprobs.device)
         self.log('{}/loss'.format(mode), loss.detach(), prog_bar=True)
         return loss, logits
+
 
     def training_step(self, batch):
         word_tokens = batch["gloss_id"]

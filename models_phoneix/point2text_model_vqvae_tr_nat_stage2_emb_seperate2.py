@@ -20,6 +20,7 @@ import ctcdecode
 from itertools import groupby
 from modules.mask_strategy import *
 from util.dtw import calculate_dtw, dtw
+import torchvision.transforms as transforms
 
 
 
@@ -30,7 +31,7 @@ class Point2textModelStage2(pl.LightningModule):
         self.text_dict = text_dict
 
         # vqvae
-        from .point2text_model_vqvae_tr_nat_stage1_seperate import Point2textModel
+        from .point2text_model_vqvae_tr_nat_stage1_seperate2 import Point2textModel
         if not os.path.exists(args.pose_vqvae):
             raise ValueError("{} is not existed!".format(args.pose_vqvae))
         else:
@@ -52,7 +53,10 @@ class Point2textModelStage2(pl.LightningModule):
         self.point_embedding.weight.data.normal_(mean=0.0, std=0.02)
 
 
-        self.pos_emb = PositionalEncoding(0.1, 512, 5000)
+        # self.tem_pos_emb = nn.Parameter(torch.zeros(2000, 512))
+        # self.tem_pos_emb.data.normal_(0, 0.02)
+        self.tem_pos_emb = PositionalEncoding(0.1, 512, 2000)
+
         self.transformer = Transformer(emb_dim=512, depth=6, block_size=5000)
         self.out_layer = nn.Linear(512, self.points_vocab_size) 
 
@@ -76,19 +80,20 @@ class Point2textModelStage2(pl.LightningModule):
         return ctc_logits, ctc_loss # [b t v], [t b v]
 
     def compute_seq2seq_ce(self, gloss_id, vq_tokens, skel_len):
-        """vq_tokens: [bs, t]
+        """vq_tokens: [bs, t, 3]
         """
-        max_len = max(skel_len)
+        
         bs = gloss_id.size(0)
         src_feat = self.gloss_embedding(gloss_id)
-        src_feat = self.pos_emb(src_feat)
+        src_feat = self.tem_pos_emb(src_feat)
         src_mask = gloss_id.ne(self.text_dict.pad()).unsqueeze_(1).unsqueeze_(2)
 
-        new_vq_tokens = vq_tokens.clone()
+        flat_len = skel_len * 3
+        new_vq_tokens = einops.rearrange(vq_tokens, "b t n -> b (t n)") # [bs, max_len * 3]
         tgt_inp = []
         tgt_out = []
         for i in range(bs):
-            cur_len = skel_len[i].item()
+            cur_len = flat_len[i].item()
             new_vq_tokens[i, cur_len:] = self.pad_id
             cur_point = new_vq_tokens[i]
 
@@ -101,22 +106,28 @@ class Point2textModelStage2(pl.LightningModule):
 
             cur_out = torch.ones_like(cur_point).to(cur_point.device) * self.pad_id
             cur_out[ind] = cur_point[ind]
-            tgt_out.append(cur_out.unsqueeze_(0)) # [1, max_len, 3]
+            tgt_out.append(cur_out.unsqueeze_(0))
 
-        tgt_inp = torch.cat(tgt_inp, dim=0)
+        tgt_inp = torch.cat(tgt_inp, dim=0)  # [b t*n]
         tgt_out = torch.cat(tgt_out, dim=0)
+        # print("new_vq_tokens: ", new_vq_tokens[:2, :20], tgt_inp.shape)
+        # print("tgt_inp: ", tgt_inp[:2, :10], tgt_inp.shape)
+        # print("tgt_out: ", tgt_out[:2, :10], tgt_out.shape)
 
-        tgt_mask = self._get_mask(skel_len, max_len, vq_tokens.device).unsqueeze_(1).unsqueeze_(2)
-        tgt_emb_inp = self.point_embedding(tgt_inp)
-        tgt_emb_inp = self.pos_emb(tgt_emb_inp)
-        out_feat = self.transformer(src_feat, src_mask, tgt_emb_inp, tgt_mask)
+        tgt_emb_inp = self.point_embedding(tgt_inp) # [b t*n h]
+        tgt_emb_inp = self.tem_pos_emb(tgt_emb_inp)
+
+        max_flat_len = max(flat_len)
+        tgt_mask = self._get_mask(flat_len, max_flat_len, vq_tokens.device).unsqueeze_(1).unsqueeze_(2)
+        out_feat = self.transformer(src_feat, src_mask, tgt_emb_inp, tgt_mask) # [b t*3 h]
+
         out_logits = self.out_layer(out_feat) 
-
         out_logits = einops.rearrange(out_logits, "b t v -> (b t) v")
         tgt_out = tgt_out.view(-1)
+        
         ce_loss = F.cross_entropy(out_logits, tgt_out, ignore_index=self.pad_id, reduction="none")
-        ce_loss = ce_loss.sum() / tgt_mask.sum()
-
+        non_pad = tgt_out.ne(self.pad_id)
+        ce_loss = ce_loss.sum() / non_pad.sum()
         return ce_loss
 
     def forward(self, batch, mode):
@@ -128,17 +139,14 @@ class Point2textModelStage2(pl.LightningModule):
         points = batch["skel_3d"]      # [bs, max_len, 150]
         skel_len = batch["skel_len"]   # list(skel_len)
         bs, max_len, v = points.size()
-        
-        points_mask = self._get_mask(skel_len*3, max_len*3, points.device)
-        # vqvae encoder
+
         with torch.no_grad():
-            vq_tokens, points_feat, commitment_loss = self.vqvae.vqvae_encode(points, points_mask) # [bs, t], [bs, h, t]
-
-        ce_loss = self.compute_seq2seq_ce(gloss_id, vq_tokens, skel_len*3)
-
+            points_mask = self._get_mask(skel_len, max_len, points.device)
+            vq_tokens, points_feat, commitment_loss = self.vqvae.vqvae_encode(points, points_mask) # [bs, t, 3], [bs, h, t, 3]
+        
+        ce_loss = self.compute_seq2seq_ce(gloss_id, vq_tokens, skel_len)
         self.log('{}_ce_loss'.format(mode), ce_loss.detach(), prog_bar=True)
 
-        # total loss
         loss = ce_loss
         self.log('{}/loss'.format(mode), loss.detach(), prog_bar=True)
         return loss
@@ -157,12 +165,94 @@ class Point2textModelStage2(pl.LightningModule):
 
         bs = gloss_id.size(0)
 
-        pred_points_5, tgt_len = self.generate(batch, batch_idx, iterations=5)
-        pred_points_1, tgt_len = self.generate(batch, batch_idx, iterations=1)
-        _, pred_logits = self.back_translate_model2(pred_points_1, skel_len, gloss_id, gloss_len, "test")
-        pred_logits = F.softmax(pred_logits, dim=-1) # [bs, t/4, vocab_size]
+        # pred_points_5, tgt_len = self.generate(batch, batch_idx, iterations=5)
+        pred_points, tgt_len = self.generate(batch, batch_idx, iterations=1)
+        dec_video = self.points2imgs(pred_points, skel_len)
+        rec_res1 = self._compute_wer(dec_video, skel_len, gloss_id, gloss_len, "test", self.back_translate_model1)
+        rec_res2 = self._compute_wer(pred_points, skel_len, gloss_id, gloss_len, "test", self.back_translate_model2)
+
+        ori_video = self.points2imgs(ori_points, skel_len)
+        ori_res1 = self._compute_wer(ori_video, skel_len, gloss_id, gloss_len, "test", self.back_translate_model1)
+        ori_res2 = self._compute_wer(ori_points, skel_len, gloss_id, gloss_len, "test", self.back_translate_model2)
+
+        dtw_scores = []
+        for i in range(bs):
+            dec_point = pred_points[i, :skel_len[i].item(), :].cpu().numpy()
+            ori_point = ori_points[i, :skel_len[i].item(), :].cpu().numpy()
+            
+            euclidean_norm = lambda x, y: np.sum(np.abs(x - y))
+            d, cost_matrix, acc_cost_matrix, path = dtw(dec_point, ori_point, dist=euclidean_norm)
+
+            # Normalise the dtw cost by sequence length
+            dtw_scores.append(d/acc_cost_matrix.shape[0])
+        
+        return rec_res1, ori_res1, dtw_scores, rec_res2, ori_res2
+
+
+    def validation_epoch_end(self, outputs) -> None:
+        rec_err, rec_correct, rec_count = np.zeros([4]), 0, 0
+        ori_err, ori_correct, ori_count = np.zeros([4]), 0, 0
+        rec_err2, rec_correct2, rec_count2 = np.zeros([4]), 0, 0
+        ori_err2, ori_correct2, ori_count2 = np.zeros([4]), 0, 0
+        dtw_scores = []
+        for rec_out, ori_out, dtw, rec_out2, ori_out2, in outputs:
+            rec_err += rec_out["wer"]
+            rec_correct += rec_out["correct"]
+            rec_count += rec_out["count"]
+            ori_err += ori_out["wer"]
+            ori_correct += ori_out["correct"]
+            ori_count += ori_out["count"]
+            
+            dtw_scores.extend(dtw)
+            
+            rec_err2 += rec_out2["wer"]
+            rec_correct2 += rec_out2["correct"]
+            rec_count2 += rec_out2["count"]
+            ori_err2 += ori_out2["wer"]
+            ori_correct2 += ori_out2["correct"]
+            ori_count2 += ori_out2["count"]
+
+        self.log('{}/acc'.format("rec"), rec_correct / rec_count, prog_bar=True)
+        self.log('{}_wer'.format("rec"), rec_err[0] / rec_count, prog_bar=True)
+        self.log('{}/acc'.format("ori"), ori_correct / ori_count, prog_bar=True)
+        self.log('{}_wer'.format("ori"), ori_err[0] / ori_count, prog_bar=True)
+        
+        self.log('{}_dtw'.format("test"), sum(dtw_scores) / len(dtw_scores), prog_bar=True)
+
+        self.log('{}/acc2'.format("rec2"), rec_correct2 / rec_count2, prog_bar=True)
+        self.log('{}_wer2'.format("rec2"), rec_err2[0] / rec_count2, prog_bar=True)
+        self.log('{}/acc2'.format("ori2"), ori_correct2 / ori_count2, prog_bar=True)
+        self.log('{}_wer2'.format("ori2"), ori_err2[0] / ori_count2, prog_bar=True)
+    
+    def points2imgs(self, points, skel_len):
+        bs, t, v = points.size()
+        video = torch.zeros(bs, t, 3, 128, 128)
+        test_transform = transforms.Compose([
+            transforms.Resize((128, 128)),
+        ])
+        for b in range(bs):
+            cur_points = points[b] # [t, v]
+            cur_len = skel_len[b].item()
+            cur_imgs = []
+            for i in range(cur_len):
+                cur_frame = cur_points[i].cpu().numpy() # [150]
+                frame = np.ones((256, 256, 3), np.uint8) * 255
+                frame_joints_2d = np.reshape(cur_frame, (50, 3))[:, :2]
+                # Draw the frame given 2D joints
+                im = draw_frame_2D(frame, frame_joints_2d) # [h, w, c]
+                im = torch.FloatTensor(im).permute(2,0,1).contiguous()
+                im = test_transform(im)
+                cur_imgs.append(im.unsqueeze(0))
+            cur_imgs = torch.cat(cur_imgs, dim=0)
+            video[b, :cur_len, ...] = cur_imgs
+        video /= 255.
+        return video.cuda()
+
+    def _compute_wer(self, points, skel_len, gloss_id, gloss_len, mode, back_model):
+        _, logits = back_model(points, skel_len, gloss_id, gloss_len, mode)
+        pred_logits = F.softmax(logits, dim=-1) # [bs, t/4, vocab_size]
         skel_len = skel_len // 4
-        pred_seq, _, _, out_seq_len = self.back_translate_model2.decoder.decode(pred_logits, skel_len)
+        pred_seq, _, _, out_seq_len = back_model.decoder.decode(pred_logits, skel_len)
         
         err_delsubins = np.zeros([4])
         count = 0
@@ -174,96 +264,57 @@ class Point2textModelStage2(pl.LightningModule):
             err = get_wer_delsubins(ref, hyp)
             err_delsubins += np.array(err)
             count += 1
-        test_res = dict(wer=err_delsubins, correct=correct, count=count)
-
-        dtw_scores_1 = []
-        dtw_scores_5 = []
-        for i in range(bs):
-            dec_point_1 = pred_points_1[i, :skel_len[i].item(), :].cpu().numpy()
-            dec_point_5 = pred_points_5[i, :skel_len[i].item(), :].cpu().numpy()
-            ori_point = ori_points[i, :skel_len[i].item(), :].cpu().numpy()
-            
-            euclidean_norm = lambda x, y: np.sum(np.abs(x - y))
-            d_1, _, acc_cost_matrix_1, _ = dtw(dec_point_1, ori_point, dist=euclidean_norm)
-            d_5, _, acc_cost_matrix_5, _ = dtw(dec_point_5, ori_point, dist=euclidean_norm)
-
-            # Normalise the dtw cost by sequence length
-            dtw_scores_1.append(d_1/acc_cost_matrix_1.shape[0])
-            dtw_scores_5.append(d_5/acc_cost_matrix_5.shape[0])
-
-        return test_res, dtw_scores_1, dtw_scores_5
-
-
-    def validation_epoch_end(self, outputs) -> None:
-        test_err, test_correct, test_count = np.zeros([4]), 0, 0
-        dtw_scores_1 = []
-        dtw_scores_5 = []
-        for test_out, dtw_score_1, dtw_score_5 in outputs:
-            test_err += test_out["wer"]
-            test_correct += test_out["correct"]
-            test_count += test_out["count"]
-            dtw_scores_1.extend(dtw_score_1)
-            dtw_scores_5.extend(dtw_score_5)
-
-
-        self.log('{}/acc'.format("test"), test_correct / test_count, prog_bar=True)
-        self.log('{}_wer'.format("test"), test_err[0] / test_count, prog_bar=True)
-        self.log('{}_dtw_1'.format("test"), sum(dtw_scores_1) / len(dtw_scores_1), prog_bar=True)
-        self.log('{}_dtw_5'.format("test"), sum(dtw_scores_5) / len(dtw_scores_5), prog_bar=True)
-
+        res = dict(wer=err_delsubins, correct=correct, count=count)
+        return res
 
     @torch.no_grad()
-    def generate(self, batch, batch_idx, iterations=10):
+    def generate(self, batch, batch_idx, iterations=10, use_gold_length=True):
         gloss_id = batch["gloss_id"]
         gloss_len = batch["gloss_len"]
         skel_len = batch["skel_len"]
 
         bs, max_src_len = gloss_id.size()
         src_feat = self.gloss_embedding(gloss_id)
-        src_feat = self.pos_emb(src_feat)
+        src_feat = self.tem_pos_emb(src_feat)
         src_mask = gloss_id.ne(self.text_dict.pad()).unsqueeze_(1).unsqueeze_(2)
 
-        tgt_len = skel_len * 3
-        max_len = max(tgt_len)
-
-        tgt_inp = gloss_id.new(bs, max_len).fill_(self.mask_id)
-
-        tgt_mask = self._get_mask(tgt_len, max_len, gloss_id.device)
+        # use ground truth length
+        if use_gold_length:
+            tgt_len = skel_len
+            flat_len = tgt_len * 3
+            max_len = max(flat_len)
+        else:
+            tgt_len = gloss_len * 8
+            flat_len = tgt_len * 3
+            max_len = max(flat_len)
+        
+        # initilize target input
+        tgt_inp = gloss_id.new(bs, max_len).fill_(self.mask_id)  # [bs, max_len*3]
+        tgt_mask = self._get_mask(flat_len, max_len, gloss_id.device) # [bs, max_len*3]
         tgt_inp = tgt_mask.long() * tgt_inp + (1 - tgt_mask.long()) * self.pad_id
-        tgt_mask = tgt_mask.unsqueeze_(1).unsqueeze_(2)
-
         pad_mask = tgt_inp.eq(self.pad_id)
-        tgt_inp, tgt_probs = self.generate_step_with_probs(tgt_inp, tgt_mask, src_feat, src_mask)        
+
+        # transformer
+        tgt_emb_inp = self.point_embedding(tgt_inp) # [b t*n h]
+        tgt_emb_inp = self.tem_pos_emb(tgt_emb_inp)
+
+        out_feat = self.transformer(src_feat, src_mask, tgt_emb_inp, tgt_mask.unsqueeze(1).unsqueeze(2)) # [b t*3 h]
+        out_logits = self.out_layer(out_feat)  # [b t*3 vocab]
+        probs = F.softmax(out_logits, dim=-1)
+        tgt_probs, tgt_inp = probs.max(dim=-1) # [b t*3]
+
 
         assign_single_value_byte(tgt_inp, pad_mask, self.pad_id)
         assign_single_value_byte(tgt_probs, pad_mask, 1.0)
+        predicts = einops.rearrange(tgt_inp, "b (t n) -> b t n", n=3)
 
-        seq_lens = tgt_len# [bs]
-
-        for counter in range(1, iterations):
-            num_mask = (seq_lens.float() * (1.0 - (counter / iterations))).long()
-
-            assign_single_value_byte(tgt_probs, pad_mask, 1.0)
-            mask_ind = self.select_worst(tgt_probs.view(bs, -1), num_mask)
-            mask_ind = mask_ind.view(bs, max_len)
-            
-            assign_single_value_long(tgt_inp.view(bs, -1), mask_ind.view(bs, -1), self.mask_id)
-            assign_single_value_byte(tgt_inp, pad_mask, self.pad_id)
-
-            new_tgt_inp, new_tgt_probs = self.generate_step_with_probs(tgt_inp, tgt_mask, src_feat, src_mask) 
-
-            assign_multi_value_long(tgt_probs.view(bs, -1), mask_ind.view(bs, -1), new_tgt_probs)
-            assign_single_value_byte(tgt_probs, pad_mask, 1.0)
-
-            assign_multi_value_long(tgt_inp.view(bs, -1), mask_ind.view(bs, -1), new_tgt_inp)
-            assign_single_value_byte(tgt_inp, pad_mask, self.pad_id)
-
-        predicts = tgt_inp
         n_codes, emb_dim = self.vqvae.codebook.embeddings.size()
         embedding = torch.cat([self.vqvae.codebook.embeddings, torch.zeros(2, emb_dim).to(predicts.device)])
-        pred_emb = F.embedding(predicts, embedding) # [bs, max_len, emb_dim]
-        pred_feat = einops.rearrange(pred_emb, "b t h -> b h t")
-        dec_pose, dec_rhand, dec_lhand = self.vqvae.vqvae_decode(pred_feat, tgt_mask)
+        pred_emb = F.embedding(predicts, embedding) # [bs, max_len, 3, emb_dim]
+        pred_feat = einops.rearrange(pred_emb, "b t n h -> b h t n")
+
+        dec_mask = self._get_mask(tgt_len, max(tgt_len), gloss_id.device)
+        dec_pose, dec_rhand, dec_lhand = self.vqvae.vqvae_decode(pred_feat, dec_mask)
 
         pred_points = torch.cat([dec_pose, dec_rhand, dec_lhand], dim=-1)
         pred_points = einops.rearrange(pred_points, "(b t) v -> b t v", b=bs) # [b max_len/3 v]
@@ -277,14 +328,14 @@ class Point2textModelStage2(pl.LightningModule):
                 ori_cur_points = ori_points[i, :tgt_len[i].item()].detach().cpu().numpy() # [cur_len, 150]
                 for j in range(pred_cur_points.shape[0]):
                     frame_joints = pred_cur_points[j]
-                    frame = np.ones((256, 256, 3), np.uint8) * 255
+                    frame = np.ones((512, 512, 3), np.uint8) * 255
                     frame_joints_2d = np.reshape(frame_joints, (50, 3))[:, :2]
                     # Draw the frame given 2D joints
                     im = draw_frame_2D(frame, frame_joints_2d)
                     pred_show_img.append(im)
                 for j in range(ori_cur_points.shape[0]):
                     frame_joints = ori_cur_points[j]
-                    frame = np.ones((256, 256, 3), np.uint8) * 255
+                    frame = np.ones((512, 512, 3), np.uint8) * 255
                     frame_joints_2d = np.reshape(frame_joints, (50, 3))[:, :2]
                     # Draw the frame given 2D joints
                     im = draw_frame_2D(frame, frame_joints_2d)
@@ -292,7 +343,7 @@ class Point2textModelStage2(pl.LightningModule):
                 pred_show_img = np.concatenate(pred_show_img, axis=1) # [h, w, c]
                 ori_show_img = np.concatenate(ori_show_img, axis=1) # [h, w, c]
                 show_img = np.concatenate([pred_show_img, ori_show_img], axis=0)
-                cv2.imwrite("/Dataset/everybody_sign_now_experiments/predictions/epoch={}_batch={}_idx={}.png".format(self.current_epoch, batch_idx, i), show_img)
+                cv2.imwrite("/Dataset/everybody_sign_now_experiments/predictions2/epoch={}_batch={}_idx={}.png".format(self.current_epoch, batch_idx, i), show_img)
                 # show_img = torch.FloatTensor(show_img).permute(2, 0, 1).contiguous().unsqueeze(0) # [1, c, h ,w]
                 # show_img = torchvision.utils.make_grid(show_img, )
                 # self.logger.experiment.add_image("{}/{}_batch_{}_{}".format("test", "pred", batch_idx, i), show_img, self.global_step)
@@ -305,16 +356,31 @@ class Point2textModelStage2(pl.LightningModule):
         return torch.stack(masks, dim=0)
 
     @torch.no_grad()
-    def generate_step_with_probs(self, tgt_inp, tgt_mask, src_feat, src_mask):
-        tgt_emb_inp = self.point_embedding(tgt_inp)
-        tgt_emb_inp = self.pos_emb(tgt_emb_inp)
+    def generate_step_with_probs(self, tgt_inp, tgt_len, src_feat, src_mask):
+        """tgt_inp: [bs, t, 3]
+           tgt_mask: [bs, t]
+        """
+        b = tgt_inp.size(0)
 
-        out_feat = self.transformer(src_feat, src_mask, tgt_emb_inp, tgt_mask)
-        out_logits = self.out_layer(out_feat) # [bs, max_len, vocab_size]
-        out_logits[:, :, -2:] = float("-inf")
+        tgt_emb_inp = self.point_embedding(tgt_inp) # [b t*n h]
+        tgt_emb_inp = self.tem_pos_emb(tgt_emb_inp)
+
+        flat_len = tgt_len * 3
+        max_flat_len = max(flat_len)
+        tgt_mask = self._get_mask(flat_len, max_flat_len, tgt_inp.device).unsqueeze_(1).unsqueeze_(2)
+        out_feat = self.transformer(src_feat, src_mask, tgt_emb_inp, tgt_mask) # [b t*3 h]
+
+        out_logits = self.out_layer(out_feat) 
+        out_logits = einops.rearrange(out_logits, "b t v -> (b t) v")
+
+
+        out_logits = self.out_layer(out_feat) 
+        out_logits = einops.rearrange(out_logits, "(b t) n v -> b t n v", b=b) # [b*t n h]
+
+        out_logits[:, :, :, -2:] = float("-inf")
         probs = F.softmax(out_logits, dim=-1)
         max_probs, idx = probs.max(dim=-1)
-        return idx, max_probs
+        return idx, max_probs # [bs, max_len, 3]
 
     def _get_mask(self, x_len, size, device):
         pos = torch.arange(0, size).unsqueeze(0).repeat(x_len.size(0), 1).to(device)
@@ -338,7 +404,7 @@ class Point2textModelStage2(pl.LightningModule):
         show_img = []
         for j in range(vis_len):
             frame_joints = points[j]
-            frame = np.ones((256, 256, 3), np.uint8) * 255
+            frame = np.ones((512, 512, 3), np.uint8) * 255
             frame_joints_2d = np.reshape(frame_joints, (50, 3))[:, :2]
             # Draw the frame given 2D joints
             im = draw_frame_2D(frame, frame_joints_2d)
@@ -404,7 +470,7 @@ class PositionalEncoding(nn.Module):
     def forward(self, emb, step=None):
         emb = emb * math.sqrt(self.dim)
         if step is None:
-            emb = emb + self.pe[:emb.size(1)]
+            emb = emb + self.pe[:emb.size(-2)]
         else:
             emb = emb + self.pe[step]
         emb = self.dropout(emb)
