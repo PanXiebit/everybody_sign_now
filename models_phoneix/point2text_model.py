@@ -28,7 +28,12 @@ import ctcdecode
 from itertools import groupby
 from util.phoneix_cleanup import clean_phoenix_2014
 from util.metrics import wer_single
+from models_phoneix.point2text_model_vqvae_tr_nat_stage1_seperate2 import Point2textModel
 
+stage1_model = Point2textModel.load_from_checkpoint(
+    checkpoint_path="/Dataset/everybody_sign_now_experiments/pose2text_logs/stage1/lightning_logs/seperate_vit/checkpoints/epoch=56-step=33743-val_wer=0.0000-val_rec_loss=0.0138-val_ce_loss=0.0000.ckpt", 
+    hparams_file="/Dataset/everybody_sign_now_experiments/pose2text_logs/stage1/lightning_logs/seperate_vit/hparams.yaml",
+    strict=False)
 
 
 class BackTranslateModel(pl.LightningModule):
@@ -56,10 +61,7 @@ class BackTranslateModel(pl.LightningModule):
                                                 blank_id=text_dict.blank(),
                                                 num_processes=10)
 
-        from .point2text_model_vqvae_tr_nat_stage1_seperate2 import Point2textModel
-        self.stage1_model = Point2textModel.load_from_checkpoint(
-            checkpoint_path="/Dataset/everybody_sign_now_experiments/pose2text_logs/stage1/lightning_logs/seperate_vit/checkpoints/epoch=56-step=33743-val_wer=0.0000-val_rec_loss=0.0138-val_ce_loss=0.0000.ckpt", 
-            hparams_file="/Dataset/everybody_sign_now_experiments/pose2text_logs/stage1/lightning_logs/seperate_vit/hparams.yaml")
+        
         self.save_hyperparameters()
 
     def forward(self, points, skel_len, word_tokens, word_len, mode):
@@ -93,8 +95,8 @@ class BackTranslateModel(pl.LightningModule):
 
         bs, max_len, v = points.size()
         points_mask = self._get_mask(skel_len, max_len, points.device)
-        _, points_feat, _ = self.stage1_model.vqvae_encode(points, points_mask) # [bs, t], [bs, h, t]
-        dec_pose, dec_rhand, dec_lhand = self.stage1_model.vqvae_decode(points_feat, points_mask)
+        _, points_feat, _ = stage1_model.vqvae_encode(points, points_mask) # [bs, t], [bs, h, t]
+        dec_pose, dec_rhand, dec_lhand = stage1_model.vqvae_decode(points_feat, points_mask)
         dec_points = torch.cat([dec_pose, dec_rhand, dec_lhand], dim=-1) # [bs*max_len, 150]
 
         loss1, _ = self.forward(points, skel_len,  word_tokens, word_len, "train")

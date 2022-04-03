@@ -33,8 +33,8 @@ def main():
     text_dict = text_dict.load(opt.vocab_file)
 
     model = BackTranslateModel(opt, text_dict)
-    model = model.load_from_checkpoint("/Dataset/everybody_sign_now_experiments/pose2text_logs/backmodel/lightning_logs/version_0/checkpoints/epoch=1-step=7095-val_wer=0.8766.ckpt", 
-        hparams_file="/Dataset/everybody_sign_now_experiments/pose2text_logs/backmodel/lightning_logs/version_0/hparams.yaml")
+    # model = model.load_from_checkpoint("/Dataset/everybody_sign_now_experiments/pose2text_logs/backmodel/lightning_logs/version_0/checkpoints/epoch=1-step=7095-val_wer=0.8766.ckpt", 
+    #     hparams_file="/Dataset/everybody_sign_now_experiments/pose2text_logs/backmodel/lightning_logs/version_0/hparams.yaml")
     
     
     callbacks = []

@@ -21,6 +21,17 @@ from itertools import groupby
 import torchvision.transforms as transforms
 from util.dtw import calculate_dtw, dtw
 
+from models_phoneix.point2text_model_cnn import BackTranslateModel as BackTranslateModel1
+from models_phoneix.point2text_model import BackTranslateModel as BackTranslateModel2
+back_translate_model1 = BackTranslateModel1.load_from_checkpoint(
+    checkpoint_path="/Dataset/everybody_sign_now_experiments/pose2text_logs/backmodel/lightning_logs/heatmap_model/checkpoints/epoch=7-step=28383-val_wer=0.6861.ckpt", 
+    hparams_file="/Dataset/everybody_sign_now_experiments/pose2text_logs/backmodel/lightning_logs/heatmap_model/hparams.yaml",
+    strict=False)
+back_translate_model2 = BackTranslateModel2.load_from_checkpoint(
+    checkpoint_path="/Dataset/everybody_sign_now_experiments/pose2text_logs/backmodel/lightning_logs/joint_model/checkpoints/epoch=13-step=8287-val_wer=0.5971.ckpt",
+    hparams_file="/Dataset/everybody_sign_now_experiments/pose2text_logs/backmodel/lightning_logs/joint_model/hparams.yaml",
+    strict=False)
+
 
 
 class Point2textModel(pl.LightningModule):
@@ -49,10 +60,7 @@ class Point2textModel(pl.LightningModule):
         self.hand_spl = SPL(input_size=256, hidden_layers=5, hidden_units=256, joint_size=3, reuse=False, sparse=False, SKELETON="sign_hand")
 
         # from .point2text_model import BackTranslateModel
-        from .point2text_model_cnn import BackTranslateModel as BackTranslateModel1
-        from .point2text_model import BackTranslateModel as BackTranslateModel2
-        self.back_translate_model1 = BackTranslateModel1.load_from_checkpoint(args.backmodel, hparams_file=args.backmodel_hparams_file)
-        self.back_translate_model2 = BackTranslateModel2.load_from_checkpoint(args.backmodel2, hparams_file=args.backmodel_hparams_file2)
+        
 
         self.save_hyperparameters()
 
@@ -176,13 +184,13 @@ class Point2textModel(pl.LightningModule):
         dec_points = einops.rearrange(dec_points, "(b t) v -> b t v", b=bs, t=max_len)
         # dec_video = self.points2imgs(dec_points, skel_len)
         # rec_res1 = self._compute_wer(dec_video, skel_len, gloss_id, gloss_len, "test", self.back_translate_model1)
-        rec_res2 = self._compute_wer(dec_points, skel_len, gloss_id, gloss_len, "test", self.back_translate_model2)
+        rec_res2 = self._compute_wer(dec_points, skel_len, gloss_id, gloss_len, "test", back_translate_model2)
         rec_res1 = rec_res2
 
         ori_points = einops.rearrange(ori_points, "(b t) v -> b t v", b=bs, t=max_len)
         # ori_video = self.points2imgs(ori_points, skel_len)
         # ori_res1 = self._compute_wer(ori_video, skel_len, gloss_id, gloss_len, "test", self.back_translate_model1)
-        ori_res2 = self._compute_wer(ori_points, skel_len, gloss_id, gloss_len, "test", self.back_translate_model2)
+        ori_res2 = self._compute_wer(ori_points, skel_len, gloss_id, gloss_len, "test", back_translate_model2)
         ori_res1 = ori_res2
 
         dtw_scores = []
